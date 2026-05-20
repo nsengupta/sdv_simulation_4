@@ -18,13 +18,15 @@
 //! - Domain emits [`ActorModeHintFromDomain`]; runtime actor owns `ActorMode` and mailbox behavior.
 
 use super::machineries::{
-    CornerLightsIncompleteCause, CornerLightsSwitchDirection, FsmAction, FsmEvent, FsmState,
+    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState,
     LightingState, VehicleContext,
 };
 use crate::engine::op_strategy::transition_map::{output, transition};
 use crate::vehicle_constants::{
-    CORNER_LIGHTS_OFF_ACK_WAIT, CORNER_LIGHTS_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
+    FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
 };
+use crate::front_headlamp_log;
+use crate::vehicle_kinematics::refresh_context_speed;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +41,8 @@ pub enum DomainAction {
     StopBuzzer,
     PublishStateSync,
     LogWarning(String),
-    RequestCornerLightsOn,
-    RequestCornerLightsOff,
+    RequestFrontHeadlampOn,
+    RequestFrontHeadlampOff,
     EnterMode(ActorModeHintFromDomain),
 }
 
@@ -71,24 +73,29 @@ pub fn step(
     let mut modified_ctx = current_ctx.clone();
     match event {
         FsmEvent::UpdateRpm(rpm) => modified_ctx.rpm = *rpm,
-        FsmEvent::UpdateSpeed(speed) => modified_ctx.speed = *speed,
         FsmEvent::UpdateAmbientLux(lux) => modified_ctx.ambient_lux = *lux,
-        FsmEvent::CornerLightsOnConfirmed => {
+        FsmEvent::FrontHeadlampOnAck => {
             modified_ctx.lighting_state = LightingState::On;
             modified_ctx.lighting_ack_pending_since = None;
         }
-        FsmEvent::CornerLightsOffConfirmed => {
+        FsmEvent::FrontHeadlampOffAck => {
             modified_ctx.lighting_state = LightingState::Off;
             modified_ctx.lighting_ack_pending_since = None;
         }
-        FsmEvent::CornerLightsActuationIncomplete { .. }
+        FsmEvent::FrontHeadlampActuationIncomplete { .. }
         | FsmEvent::PowerOn
         | FsmEvent::PowerOff
         | FsmEvent::TimerTick => {}
     }
 
+    refresh_context_speed(&mut modified_ctx);
+    // Ignition off: kinematic speed is not meaningful; keep standstill for invariants.
+    if *current_state == FsmState::Off {
+        modified_ctx.speed = 0;
+    }
+
     let next_state = transition(current_state, event, &modified_ctx, now);
-    let mut actions: Vec<DomainAction> = output(current_state, &next_state)
+    let mut actions: Vec<DomainAction> = output(current_state, &next_state, &modified_ctx)
         .into_iter()
         .filter_map(map_fsm_action)
         .collect();
@@ -97,22 +104,22 @@ pub fn step(
         (LightingState::Off, FsmEvent::UpdateAmbientLux(lux)) if *lux <= LUX_ON_THRESHOLD => {
             modified_ctx.lighting_state = LightingState::OnRequested;
             modified_ctx.lighting_ack_pending_since = Some(now);
-            actions.push(DomainAction::RequestCornerLightsOn);
+            actions.push(DomainAction::RequestFrontHeadlampOn);
         }
         (LightingState::On, FsmEvent::UpdateAmbientLux(lux)) if *lux >= LUX_OFF_THRESHOLD => {
             modified_ctx.lighting_state = LightingState::OffRequested;
             modified_ctx.lighting_ack_pending_since = Some(now);
-            actions.push(DomainAction::RequestCornerLightsOff);
+            actions.push(DomainAction::RequestFrontHeadlampOff);
         }
         _ => {}
     }
 
     if matches!(event, FsmEvent::TimerTick) {
-        try_corner_lights_ack_timeout(&mut modified_ctx, now, &mut actions);
+        try_front_headlamp_ack_timeout(&mut modified_ctx, now, &mut actions);
     }
 
-    if let FsmEvent::CornerLightsActuationIncomplete { direction, cause } = event {
-        try_recover_corner_lights_incomplete(&mut modified_ctx, *direction, *cause, &mut actions);
+    if let FsmEvent::FrontHeadlampActuationIncomplete { direction, cause } = event {
+        try_recover_front_headlamp_incomplete(&mut modified_ctx, *direction, *cause, &mut actions);
     }
 
     if matches!(next_state, FsmState::Off) {
@@ -120,7 +127,7 @@ pub fn step(
         modified_ctx.lighting_ack_pending_since = None;
     }
 
-    if matches!(next_state, FsmState::Warning(_)) {
+    if matches!(next_state, FsmState::ExtremeOperationWarning(_)) {
         actions.push(DomainAction::EnterMode(ActorModeHintFromDomain::Transitioning));
     } else {
         actions.push(DomainAction::EnterMode(ActorModeHintFromDomain::Normal));
@@ -156,7 +163,7 @@ fn ack_wait_elapsed(since: Instant, now: Instant, wait: Duration) -> bool {
 }
 
 /// If we have been waiting for an ON/OFF ACK too long, revert to a safe lighting state and log.
-fn try_corner_lights_ack_timeout(
+fn try_front_headlamp_ack_timeout(
     modified_ctx: &mut VehicleContext,
     now: Instant,
     actions: &mut Vec<DomainAction>,
@@ -165,21 +172,21 @@ fn try_corner_lights_ack_timeout(
         return;
     };
     match modified_ctx.lighting_state {
-        LightingState::OnRequested if ack_wait_elapsed(since, now, CORNER_LIGHTS_ON_ACK_WAIT) => {
-            try_recover_corner_lights_incomplete(
+        LightingState::OnRequested if ack_wait_elapsed(since, now, FRONT_HEADLAMP_ON_ACK_WAIT) => {
+            try_recover_front_headlamp_incomplete(
                 modified_ctx,
-                CornerLightsSwitchDirection::On,
-                CornerLightsIncompleteCause::TimedOut,
+                FrontHeadlampSwitchDirection::On,
+                FrontHeadlampIncompleteCause::TimedOut,
                 actions,
             );
         }
         LightingState::OffRequested
-            if ack_wait_elapsed(since, now, CORNER_LIGHTS_OFF_ACK_WAIT) =>
+            if ack_wait_elapsed(since, now, FRONT_HEADLAMP_OFF_ACK_WAIT) =>
         {
-            try_recover_corner_lights_incomplete(
+            try_recover_front_headlamp_incomplete(
                 modified_ctx,
-                CornerLightsSwitchDirection::Off,
-                CornerLightsIncompleteCause::TimedOut,
+                FrontHeadlampSwitchDirection::Off,
+                FrontHeadlampIncompleteCause::TimedOut,
                 actions,
             );
         }
@@ -187,42 +194,32 @@ fn try_corner_lights_ack_timeout(
     }
 }
 
-/// Recover from a failed corner-lights command when `direction` matches the pending request.
-fn try_recover_corner_lights_incomplete(
+/// Recover from a failed front-headlamp command when `direction` matches the pending request.
+fn try_recover_front_headlamp_incomplete(
     modified_ctx: &mut VehicleContext,
-    direction: CornerLightsSwitchDirection,
-    cause: CornerLightsIncompleteCause,
+    direction: FrontHeadlampSwitchDirection,
+    cause: FrontHeadlampIncompleteCause,
     actions: &mut Vec<DomainAction>,
 ) {
     let matches_pending = matches!(
         (modified_ctx.lighting_state, direction),
-        (LightingState::OnRequested, CornerLightsSwitchDirection::On)
-            | (LightingState::OffRequested, CornerLightsSwitchDirection::Off)
+        (LightingState::OnRequested, FrontHeadlampSwitchDirection::On)
+            | (LightingState::OffRequested, FrontHeadlampSwitchDirection::Off)
     );
     if !matches_pending {
         return;
     }
 
-    let detail = match cause {
-        CornerLightsIncompleteCause::TimedOut => "timed out (no ACK)",
-        CornerLightsIncompleteCause::NegativeAck => "rejected by actuator (negative acknowledgement)",
-        #[allow(unreachable_patterns)]
-        _ => "incomplete",
-    };
-
     modified_ctx.lighting_ack_pending_since = None;
+    let warning = front_headlamp_log::alert_incomplete(direction, cause);
     match direction {
-        CornerLightsSwitchDirection::On => {
+        FrontHeadlampSwitchDirection::On => {
             modified_ctx.lighting_state = LightingState::Off;
-            actions.push(DomainAction::LogWarning(format!(
-                "Corner lights ON request {detail}"
-            )));
+            actions.push(DomainAction::LogWarning(warning));
         }
-        CornerLightsSwitchDirection::Off => {
+        FrontHeadlampSwitchDirection::Off => {
             modified_ctx.lighting_state = LightingState::On;
-            actions.push(DomainAction::LogWarning(format!(
-                "Corner lights OFF request {detail}"
-            )));
+            actions.push(DomainAction::LogWarning(warning));
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Bus-level integration test for corner-light ACK ingress on `vcan0`.
+//! Bus-level integration test for front-headlamp ACK ingress on `vcan0`.
 //!
 //! This test exercises real SocketCAN I/O:
 //! writer socket -> `vcan0` -> reader socket -> wire decode helpers.
@@ -6,15 +6,12 @@
 use std::time::{Duration, Instant};
 
 use common::{ActuationCommand, CorrelationId, PhysicalCarVocabulary};
-use devices::corner_lights::codec::{payload_to_physical, KIND_ACK_ON, KIND_CMD_ON, KIND_NACK_ON};
-use devices::corner_lights::can::{
+use socketcan::{CanSocket, EmbeddedFrame, Socket};
+use vehicle_device_bus::devices::front_headlamp::codec::{payload_to_physical, KIND_ACK_ON, KIND_CMD_ON, KIND_NACK_ON};
+use vehicle_device_bus::devices::front_headlamp::can::{
     actuation_command_wire_meta, decode_payload_from_can_frame, encode_ack_frame, encode_command_frame,
     encode_nack_frame,
 };
-use socketcan::{CanSocket, EmbeddedFrame, Socket};
-
-#[path = "../src/devices/mod.rs"]
-mod devices;
 
 const TEST_CAN_INTERFACE: &str = "vcan0";
 
@@ -84,12 +81,12 @@ async fn recv_first_ack_or_nack(rx: CanSocket, timeout: Duration) -> Option<sock
 }
 
 #[tokio::test]
-async fn corner_lights_ack_frame_round_trips_over_vcan_and_decodes() {
+async fn front_headlamp_ack_frame_round_trips_over_vcan_and_decodes() {
     let Some((tx, rx)) = open_bus_pair() else {
         return;
     };
 
-    let cmd = ActuationCommand::SwitchCornerLightsOn {
+    let cmd = ActuationCommand::SwitchFrontHeadlampOn {
         correlation_id: sample_corr(),
     };
     let frame = encode_ack_frame(&cmd).expect("encode ACK frame");
@@ -101,22 +98,22 @@ async fn corner_lights_ack_frame_round_trips_over_vcan_and_decodes() {
         .await
         .expect("did not receive expected ACK frame kind on vcan0 before timeout");
     let payload = decode_payload_from_can_frame(&got)
-        .expect("decode corner-light payload from CAN");
+        .expect("decode front-headlamp payload from CAN");
     assert_eq!((payload.session_id, payload.sequence_no), expected_wire);
     let physical = payload_to_physical(payload)
         .expect("ACK frame should map to physical vocabulary");
     assert!(matches!(
         physical,
-        PhysicalCarVocabulary::CornerLightsCommandConfirmed { on_command: true }
+        PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: true }
     ));
 }
 
 #[tokio::test]
-async fn corner_lights_nack_frame_round_trips_over_vcan_and_decodes() {
+async fn front_headlamp_nack_frame_round_trips_over_vcan_and_decodes() {
     let Some((tx, rx)) = open_bus_pair() else {
         return;
     };
-    let cmd = ActuationCommand::SwitchCornerLightsOn {
+    let cmd = ActuationCommand::SwitchFrontHeadlampOn {
         correlation_id: sample_corr(),
     };
     let frame = encode_nack_frame(&cmd).expect("encode NACK frame");
@@ -126,21 +123,21 @@ async fn corner_lights_nack_frame_round_trips_over_vcan_and_decodes() {
         .await
         .expect("did not receive expected NACK frame kind on vcan0 before timeout");
     let payload = decode_payload_from_can_frame(&got)
-        .expect("decode corner-light payload from CAN");
+        .expect("decode front-headlamp payload from CAN");
     let physical = payload_to_physical(payload)
         .expect("NACK frame should map to physical vocabulary");
     assert!(matches!(
         physical,
-        PhysicalCarVocabulary::CornerLightsCommandRejected { on_command: true }
+        PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command: true }
     ));
 }
 
 #[tokio::test]
-async fn corner_lights_command_frame_is_not_ingressed_as_physical_event() {
+async fn front_headlamp_command_frame_is_not_ingressed_as_physical_event() {
     let Some((tx, rx)) = open_bus_pair() else {
         return;
     };
-    let cmd = ActuationCommand::SwitchCornerLightsOn {
+    let cmd = ActuationCommand::SwitchFrontHeadlampOn {
         correlation_id: sample_corr(),
     };
     let frame = encode_command_frame(&cmd).expect("encode CMD frame");
@@ -150,7 +147,7 @@ async fn corner_lights_command_frame_is_not_ingressed_as_physical_event() {
         .await
         .expect("did not receive expected CMD frame kind on vcan0 before timeout");
     let payload = decode_payload_from_can_frame(&got)
-        .expect("decode corner-light payload from CAN");
+        .expect("decode front-headlamp payload from CAN");
     assert!(
         payload_to_physical(payload).is_none(),
         "command frames must not be ingressed as physical ACK/NACK events"
@@ -158,7 +155,7 @@ async fn corner_lights_command_frame_is_not_ingressed_as_physical_event() {
 }
 
 #[tokio::test]
-async fn corner_lights_no_response_window_has_no_ack_or_nack_frames() {
+async fn front_headlamp_no_response_window_has_no_ack_or_nack_frames() {
     let Some((_tx, rx)) = open_bus_pair() else {
         return;
     };

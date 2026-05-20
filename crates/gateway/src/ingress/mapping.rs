@@ -33,19 +33,6 @@ mod tests {
     }
 
     #[test]
-    fn given_vehicle_speed_signal_when_mapped_then_preserves_value() {
-        let msg = vehicle_event_to_physical_vocabulary(VehicleEvent::TelemetryUpdate(
-            VssSignal::VehicleSpeed(123.45),
-        ));
-        match msg {
-            PhysicalCarVocabulary::TelemetryUpdate(VssSignal::VehicleSpeed(v)) => {
-                assert_eq!(v, 123.45)
-            }
-            other => panic!("unexpected speed mapping: {other:?}"),
-        }
-    }
-
-    #[test]
     fn given_engine_rpm_signal_when_mapped_then_preserves_value() {
         let msg = vehicle_event_to_physical_vocabulary(VehicleEvent::TelemetryUpdate(
             VssSignal::EngineRpm(4567),

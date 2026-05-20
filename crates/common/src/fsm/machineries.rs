@@ -1,6 +1,6 @@
 //! FSM state, context, events, and domain actions for the vehicle twin.
 //!
-//! ## Corner-lights incomplete / timeout
+//! ## Front-headlamp incomplete / timeout
 //!
 //! ACK wait policy and recovery live in `crate::fsm::step` and `crate::vehicle_constants`. See
 //! README *Known Demo Behaviors* for user-visible effects.
@@ -8,23 +8,23 @@
 use crate::domain_types::VehicleState;
 use std::time::Instant;
 
-/// Which corner-lights switch path an incomplete outcome refers to (ON vs OFF request in flight).
+/// Which front-headlamp switch path an incomplete outcome refers to (ON vs OFF request in flight).
 ///
 /// Complements [`LightingState::OnRequested`] / [`LightingState::OffRequested`] and pairs with
-/// [`FsmEvent::CornerLightsOnConfirmed`] / [`FsmEvent::CornerLightsOffConfirmed`] for the success path.
+/// [`FsmEvent::FrontHeadlampOnAck`] / [`FsmEvent::FrontHeadlampOffAck`] for the success path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CornerLightsSwitchDirection {
+pub enum FrontHeadlampSwitchDirection {
     On,
     Off,
 }
 
-/// Why a corner-lights command did not **complete** with a positive acknowledgement.
+/// Why a front-headlamp command did not **complete** with a positive acknowledgement.
 ///
 /// `TimedOut` is applied from `TimerTick` policy in `step` and may later be sent explicitly on ingress.
 /// Future CAN work: add e.g. bus negative-ack codes here and map from `PhysicalCarVocabulary` / gateway decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum CornerLightsIncompleteCause {
+pub enum FrontHeadlampIncompleteCause {
     /// No confirming ACK (and no bus-level failure frame) before the policy deadline — detected on [`FsmEvent::TimerTick`] in `step`.
     TimedOut,
     /// Actuator responded with an explicit negative acknowledgement for the command in flight.
@@ -42,13 +42,14 @@ pub enum LightingState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleContext {
     pub rpm: u16,
-    pub speed: u8,
+    /// Derived ground speed in km/h (from wheel RPM via [`crate::vehicle_kinematics`]).
+    pub speed: u16,
     pub fuel_level: u8,
     pub oil_pressure: u8,
     pub tyre_pressure_ok: bool,
     pub ambient_lux: u16,
     pub lighting_state: LightingState,
-    /// When set, we are waiting for a corner-lights ACK for the current `OnRequested` / `OffRequested` state.
+    /// When set, we are waiting for a front-headlamp ACK for the current `OnRequested` / `OffRequested` state.
     pub lighting_ack_pending_since: Option<Instant>,
 }
 
@@ -78,7 +79,8 @@ pub enum FsmState {
     Off,
     Idle,
     Driving,
-    Warning(Instant),
+    /// Speed > 160 km/h and RPM > 5500 sustained (see [`crate::vehicle_constants`]).
+    ExtremeOperationWarning(Instant),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -87,16 +89,15 @@ pub enum FsmEvent {
     PowerOff,
     // Atomic updates from the bus
     UpdateRpm(u16),
-    UpdateSpeed(u8),
     UpdateAmbientLux(u16),
-    CornerLightsOnConfirmed,
-    CornerLightsOffConfirmed,
-    /// Corner-lights command did not complete (see [`CornerLightsIncompleteCause`]).
+    FrontHeadlampOnAck,
+    FrontHeadlampOffAck,
+    /// Front-headlamp command did not complete (see [`FrontHeadlampIncompleteCause`]).
     ///
     /// Gateway may inject this when CAN carries negative acknowledgement / failure (future).
-    CornerLightsActuationIncomplete {
-        direction: CornerLightsSwitchDirection,
-        cause: CornerLightsIncompleteCause,
+    FrontHeadlampActuationIncomplete {
+        direction: FrontHeadlampSwitchDirection,
+        cause: FrontHeadlampIncompleteCause,
     },
     // Internal triggers
     TimerTick,
@@ -122,7 +123,7 @@ impl From<&FsmState> for VehicleState {
             FsmState::Off => VehicleState::Off,
             FsmState::Idle => VehicleState::Idle,
             FsmState::Driving => VehicleState::Driving,
-            FsmState::Warning(_) => VehicleState::Warning,
+            FsmState::ExtremeOperationWarning(_) => VehicleState::ExtremeOperationWarning,
         }
     }
 }

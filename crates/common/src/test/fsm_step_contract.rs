@@ -2,6 +2,9 @@
 
 use crate::digital_twin::DigitalTwinCar;
 use crate::fsm::{step, DomainAction, FsmEvent, FsmState, VehicleContext};
+use crate::vehicle_constants::{
+    EXTREME_OPERATION_WARNING_MESSAGE, SPEED_THRESHOLD_WARNING_MESSAGE,
+};
 use std::time::{Duration, Instant};
 
 fn valid_twin_context() -> VehicleContext {
@@ -37,15 +40,45 @@ fn test_step_derive_ctx_and_warning_flow() {
     let warning = step(
         &current_state,
         &current_ctx,
-        &FsmEvent::UpdateRpm(6500),
+        &FsmEvent::UpdateRpm(5600),
         Instant::now(),
     );
-    assert_eq!(warning.modified_ctx.rpm, 6500);
-    assert!(matches!(warning.next_state, FsmState::Warning(_)));
+    assert_eq!(warning.modified_ctx.rpm, 5600);
+    assert!(matches!(
+        warning.next_state,
+        FsmState::ExtremeOperationWarning(_)
+    ));
     assert!(warning.actions.contains(&DomainAction::StartBuzzer));
-    assert!(warning
+    assert!(warning.actions.contains(&DomainAction::LogWarning(
+        SPEED_THRESHOLD_WARNING_MESSAGE.to_string()
+    )));
+    assert!(warning.actions.contains(&DomainAction::LogWarning(
+        EXTREME_OPERATION_WARNING_MESSAGE.to_string()
+    )));
+}
+
+#[test]
+fn test_step_high_speed_below_rpm_threshold_still_warns_on_speed() {
+    let current_ctx = valid_twin_context();
+    let current_state = FsmState::Driving;
+
+    let result = step(
+        &current_state,
+        &current_ctx,
+        &FsmEvent::UpdateRpm(3600),
+        Instant::now(),
+    );
+    assert_eq!(result.modified_ctx.rpm, 3600);
+    assert!(matches!(
+        result.next_state,
+        FsmState::ExtremeOperationWarning(_)
+    ));
+    assert!(result.actions.contains(&DomainAction::LogWarning(
+        SPEED_THRESHOLD_WARNING_MESSAGE.to_string()
+    )));
+    assert!(!result
         .actions
-        .contains(&DomainAction::LogWarning("Overspeed detected!".to_string())));
+        .contains(&DomainAction::LogWarning(EXTREME_OPERATION_WARNING_MESSAGE.to_string())));
 }
 
 #[test]
@@ -59,8 +92,8 @@ fn test_step_standard_commute_flow() {
     let sequence = vec![
         (FsmEvent::PowerOn, FsmState::Idle),
         (FsmEvent::UpdateRpm(1500), FsmState::Driving),
-        (FsmEvent::UpdateSpeed(50), FsmState::Driving),
-        (FsmEvent::UpdateSpeed(0), FsmState::Idle),
+        (FsmEvent::UpdateRpm(1300), FsmState::Driving),
+        (FsmEvent::UpdateRpm(0), FsmState::Idle),
         (FsmEvent::PowerOff, FsmState::Off),
     ];
 
@@ -75,11 +108,14 @@ fn test_step_standard_commute_flow() {
 #[test]
 fn test_step_warning_recovery_on_tick_uses_passed_time() {
     let base = Instant::now();
-    let mut ctx = valid_twin_context();
-    ctx.rpm = 3000;
-    ctx.speed = 10;
+    let ctx = {
+        let mut c = valid_twin_context();
+        c.rpm = 1000;
+        crate::vehicle_kinematics::refresh_context_speed(&mut c);
+        c
+    };
 
-    let warning_state = FsmState::Warning(base);
+    let warning_state = FsmState::ExtremeOperationWarning(base);
 
     let early = step(
         &warning_state,
@@ -87,7 +123,10 @@ fn test_step_warning_recovery_on_tick_uses_passed_time() {
         &FsmEvent::TimerTick,
         base + Duration::from_secs(2),
     );
-    assert!(matches!(early.next_state, FsmState::Warning(_)));
+    assert!(matches!(
+        early.next_state,
+        FsmState::ExtremeOperationWarning(_)
+    ));
 
     let recovered = step(
         &warning_state,

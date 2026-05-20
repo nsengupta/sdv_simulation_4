@@ -1,9 +1,7 @@
 use crate::signals::VssSignal;
 pub use crate::vehicle_constants::{
-    RPM_GREENLINE_THRESHOLD,
-    RPM_IDLE,
-    RPM_REDLINE_THRESHOLD,
-    RPM_STRESS_DURATION_THRESHOLD_SECS,
+    RPM_EXTREME_OPERATION_THRESHOLD, RPM_IDLE, RPM_REDLINE_THRESHOLD,
+    RPM_STRESS_DURATION_THRESHOLD_SECS, SPEED_EXTREME_OPERATION_THRESHOLD_KPH,
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +17,8 @@ pub enum VehicleState {
     Off,
     Idle,
     Driving,
-    Warning,
+    #[serde(alias = "warning")]
+    ExtremeOperationWarning,
     Critical,
 }
 impl Default for VehicleState {
@@ -47,13 +46,14 @@ pub enum PhysicalCarVocabulary {
     TimerTick,
     /// Emergency stop or system reset
     SystemReset,
-    /// Actuator / body-controller confirmed command completion (ingress via gateway CAN decode, ID `0x204` ACK).
+    /// Actuator completed the command (ingress: CAN ACK decoded at gateway).
     ///
-    /// `on_command = true` means the ON request was confirmed; `false` means OFF request confirmed.
-    CornerLightsCommandConfirmed { on_command: bool },
-    /// Actuator / body-controller explicitly rejected command completion (ingress via gateway decode, ID `0x204` NACK).
+    /// Outside/physical vocabulary uses **Confirmed/Rejected**; projection maps to
+    /// [`crate::fsm::FsmEvent::FrontHeadlampOnAck`] / `OffAck`. `on_command = true` → ON path.
+    FrontHeadlampCommandConfirmed { on_command: bool },
+    /// Actuator rejected the command (ingress: CAN NACK decoded at gateway).
     ///
-    /// This is distinct from timeout/no-response; those are inferred by TimerTick policy in the FSM.
-    /// `on_command = true` means the ON request was rejected; `false` means OFF request rejected.
-    CornerLightsCommandRejected { on_command: bool },
+    /// Maps to [`crate::fsm::FsmEvent::FrontHeadlampActuationIncomplete`] with
+    /// [`crate::fsm::FrontHeadlampIncompleteCause::NegativeAck`]. Timeout stays on `TimerTick`.
+    FrontHeadlampCommandRejected { on_command: bool },
 }

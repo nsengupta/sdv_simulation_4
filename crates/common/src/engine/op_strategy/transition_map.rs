@@ -1,8 +1,10 @@
 use crate::fsm::machineries::{FsmAction, FsmEvent, FsmState, VehicleContext};
-use crate::vehicle_constants::{RPM_GREENLINE_THRESHOLD, RPM_STRESS_DURATION_THRESHOLD_SECS};
+use crate::vehicle_constants::{
+    extreme_operation_active, operational_warning_active, speed_threshold_exceeded,
+    EXTREME_OPERATION_WARNING_MESSAGE, RPM_STRESS_DURATION_THRESHOLD_SECS,
+    SPEED_THRESHOLD_WARNING_MESSAGE,
+};
 use std::time::{Duration, Instant};
-
-const RPM_RECOVERY_THRESHOLD: u16 = 5000;
 
 /// Transition spec (runtime source of truth).
 ///
@@ -10,9 +12,9 @@ const RPM_RECOVERY_THRESHOLD: u16 = 5000;
 /// - Off + PowerOn(healthy ctx) -> Idle
 /// - Idle + PowerOff -> Off
 /// - Idle + UpdateRpm(rpm > 1000) -> Driving
-/// - Driving + UpdateSpeed(0) -> Idle
-/// - Driving + UpdateRpm(rpm > greenline threshold) -> Warning(now)
-/// - Warning + TimerTick + cooldown elapsed + rpm <= recovery threshold -> Driving/Idle
+/// - Driving + derived ctx.speed == 0 -> Idle (any event, after kinematic refresh in `step`)
+/// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
+/// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
 /// - Everything else -> stay in current state
 pub fn transition(
     current_state: &FsmState,
@@ -38,16 +40,18 @@ pub fn transition(
             _ => Idle,
         },
         Driving => match event {
-            UpdateSpeed(speed) if *speed == 0 => Idle,
-            UpdateRpm(rpm) if *rpm > RPM_GREENLINE_THRESHOLD => Warning(now),
             PowerOff => {
                 eprintln!("[REJECTED]: PowerOff is invalid while in state {:?}", current_state);
                 Driving
             }
+            _ if operational_warning_active(current_ctx.rpm, current_ctx.speed) => {
+                ExtremeOperationWarning(now)
+            }
+            _ if current_ctx.speed == 0 => Idle,
             _ => Driving,
         },
-        Warning(began_at) => match event {
-            TimerTick if warning_recovery_ready(*began_at, now, current_ctx.rpm) => {
+        ExtremeOperationWarning(began_at) => match event {
+            TimerTick if operational_warning_recovery_ready(*began_at, now, current_ctx) => {
                 if current_ctx.speed == 0 {
                     Idle
                 } else {
@@ -56,27 +60,39 @@ pub fn transition(
             }
             PowerOff => {
                 eprintln!("[REJECTED]: PowerOff is invalid while in state {:?}", current_state);
-                Warning(*began_at)
+                ExtremeOperationWarning(*began_at)
             }
-            _ => Warning(*began_at),
+            _ => ExtremeOperationWarning(*began_at),
         },
     }
 }
 
-fn warning_recovery_ready(began_at: Instant, now: Instant, rpm: u16) -> bool {
+fn operational_warning_recovery_ready(began_at: Instant, now: Instant, ctx: &VehicleContext) -> bool {
     let warning_age = now
         .checked_duration_since(began_at)
         .unwrap_or(Duration::ZERO);
-    warning_age >= Duration::from_secs(RPM_STRESS_DURATION_THRESHOLD_SECS) && rpm <= RPM_RECOVERY_THRESHOLD
+    warning_age >= Duration::from_secs(RPM_STRESS_DURATION_THRESHOLD_SECS)
+        && !operational_warning_active(ctx.rpm, ctx.speed)
 }
 
-pub fn output(old_state: &FsmState, new_state: &FsmState) -> Vec<FsmAction> {
+pub fn output(old_state: &FsmState, new_state: &FsmState, ctx: &VehicleContext) -> Vec<FsmAction> {
     use FsmAction::*;
     use FsmState::*;
 
     match (old_state, new_state) {
-        (Driving, Warning(_)) => vec![StartBuzzer, LogWarning("Overspeed detected!".to_string())],
-        (Warning(_), Driving) | (Warning(_), Idle) => vec![StopBuzzer],
+        (Driving, ExtremeOperationWarning(_)) => {
+            let mut actions = vec![StartBuzzer];
+            if speed_threshold_exceeded(ctx.speed) {
+                actions.push(LogWarning(SPEED_THRESHOLD_WARNING_MESSAGE.to_string()));
+            }
+            if extreme_operation_active(ctx.rpm, ctx.speed) {
+                actions.push(LogWarning(EXTREME_OPERATION_WARNING_MESSAGE.to_string()));
+            }
+            actions
+        }
+        (ExtremeOperationWarning(_), Driving) | (ExtremeOperationWarning(_), Idle) => {
+            vec![StopBuzzer]
+        }
         (old, new) if old != new => vec![PublishStateSync],
         _ => vec![],
     }

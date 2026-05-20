@@ -1,10 +1,12 @@
 //! Behavioral contract tests for lighting sub-state behavior.
 
 use crate::fsm::{
-    step, CornerLightsIncompleteCause, CornerLightsSwitchDirection, DomainAction, FsmEvent,
+    step, FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, DomainAction, FsmEvent,
     FsmState, LightingState, VehicleContext,
 };
-use crate::vehicle_constants::{CORNER_LIGHTS_OFF_ACK_WAIT, CORNER_LIGHTS_ON_ACK_WAIT};
+use crate::vehicle_constants::{
+    FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
+};
 use std::time::Instant;
 
 fn valid_twin_context() -> VehicleContext {
@@ -21,20 +23,21 @@ fn valid_twin_context() -> VehicleContext {
 }
 
 #[test]
-fn given_lights_off_when_lux_below_on_threshold_then_requests_corner_lights_on() {
+fn given_lights_off_when_lux_below_on_threshold_then_requests_front_headlamp_on() {
     let current_state = FsmState::Idle;
     let current_ctx = valid_twin_context();
 
+    // Dim side of emulator jitter band (~815) is below LUX_ON_THRESHOLD (840).
     let result = step(
         &current_state,
         &current_ctx,
-        &FsmEvent::UpdateAmbientLux(20),
+        &FsmEvent::UpdateAmbientLux(830),
         Instant::now(),
     );
 
     assert!(result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOn));
+        .contains(&DomainAction::RequestFrontHeadlampOn));
 }
 
 #[test]
@@ -49,17 +52,17 @@ fn given_on_requested_when_ack_on_then_no_duplicate_on_request_emitted() {
     let result = step(
         &current_state,
         &current_ctx,
-        &FsmEvent::CornerLightsOnConfirmed,
+        &FsmEvent::FrontHeadlampOnAck,
         Instant::now(),
     );
 
     assert!(!result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOn));
+        .contains(&DomainAction::RequestFrontHeadlampOn));
 }
 
 #[test]
-fn given_lights_on_when_lux_above_off_threshold_then_requests_corner_lights_off() {
+fn given_lights_on_when_lux_above_off_threshold_then_requests_front_headlamp_off() {
     let current_state = FsmState::Driving;
     let current_ctx = VehicleContext {
         lighting_state: LightingState::On,
@@ -70,48 +73,48 @@ fn given_lights_on_when_lux_above_off_threshold_then_requests_corner_lights_off(
     let result = step(
         &current_state,
         &current_ctx,
-        &FsmEvent::UpdateAmbientLux(50),
+        &FsmEvent::UpdateAmbientLux(LUX_OFF_THRESHOLD),
         Instant::now(),
     );
 
     assert!(result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOff));
+        .contains(&DomainAction::RequestFrontHeadlampOff));
 }
 
 #[test]
-fn given_lights_off_when_lux_at_on_threshold_then_requests_corner_lights_on() {
+fn given_lights_off_when_lux_at_on_threshold_then_requests_front_headlamp_on() {
     let result = step(
         &FsmState::Idle,
         &valid_twin_context(),
-        &FsmEvent::UpdateAmbientLux(30),
+        &FsmEvent::UpdateAmbientLux(LUX_ON_THRESHOLD),
         Instant::now(),
     );
 
     assert!(result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOn));
+        .contains(&DomainAction::RequestFrontHeadlampOn));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OnRequested);
     assert!(result.modified_ctx.lighting_ack_pending_since.is_some());
 }
 
 #[test]
-fn given_lights_off_when_lux_in_deadband_then_does_not_request_corner_lights_on() {
+fn given_lights_off_when_lux_in_deadband_then_does_not_request_front_headlamp_on() {
     let result = step(
         &FsmState::Idle,
         &valid_twin_context(),
-        &FsmEvent::UpdateAmbientLux(40),
+        &FsmEvent::UpdateAmbientLux(LUX_ON_THRESHOLD + 10),
         Instant::now(),
     );
 
     assert!(!result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOn));
+        .contains(&DomainAction::RequestFrontHeadlampOn));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::Off);
 }
 
 #[test]
-fn given_lights_on_when_lux_at_off_threshold_then_requests_corner_lights_off() {
+fn given_lights_on_when_lux_at_off_threshold_then_requests_front_headlamp_off() {
     let current_ctx = VehicleContext {
         lighting_state: LightingState::On,
         ..valid_twin_context()
@@ -119,19 +122,19 @@ fn given_lights_on_when_lux_at_off_threshold_then_requests_corner_lights_off() {
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::UpdateAmbientLux(45),
+        &FsmEvent::UpdateAmbientLux(LUX_OFF_THRESHOLD),
         Instant::now(),
     );
 
     assert!(result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOff));
+        .contains(&DomainAction::RequestFrontHeadlampOff));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OffRequested);
     assert!(result.modified_ctx.lighting_ack_pending_since.is_some());
 }
 
 #[test]
-fn given_lights_on_when_lux_in_deadband_then_does_not_request_corner_lights_off() {
+fn given_lights_on_when_lux_in_deadband_then_does_not_request_front_headlamp_off() {
     let current_ctx = VehicleContext {
         lighting_state: LightingState::On,
         ..valid_twin_context()
@@ -139,13 +142,13 @@ fn given_lights_on_when_lux_in_deadband_then_does_not_request_corner_lights_off(
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::UpdateAmbientLux(40),
+        &FsmEvent::UpdateAmbientLux(LUX_ON_THRESHOLD + 10),
         Instant::now(),
     );
 
     assert!(!result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOff));
+        .contains(&DomainAction::RequestFrontHeadlampOff));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::On);
 }
 
@@ -165,7 +168,7 @@ fn given_lights_on_requested_when_low_lux_arrives_then_does_not_emit_duplicate_o
 
     assert!(!result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOn));
+        .contains(&DomainAction::RequestFrontHeadlampOn));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OnRequested);
 }
 
@@ -179,13 +182,13 @@ fn given_lights_off_requested_when_high_lux_arrives_then_does_not_emit_duplicate
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::UpdateAmbientLux(50),
+        &FsmEvent::UpdateAmbientLux(LUX_OFF_THRESHOLD),
         Instant::now(),
     );
 
     assert!(!result
         .actions
-        .contains(&DomainAction::RequestCornerLightsOff));
+        .contains(&DomainAction::RequestFrontHeadlampOff));
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OffRequested);
 }
 
@@ -198,7 +201,7 @@ fn given_on_requested_when_ack_on_then_transitions_to_on() {
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::CornerLightsOnConfirmed,
+        &FsmEvent::FrontHeadlampOnAck,
         Instant::now(),
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::On);
@@ -214,14 +217,14 @@ fn given_off_requested_when_ack_off_then_transitions_to_off() {
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::CornerLightsOffConfirmed,
+        &FsmEvent::FrontHeadlampOffAck,
         Instant::now(),
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::Off);
     assert!(result.modified_ctx.lighting_ack_pending_since.is_none());
 }
 
-/// Elapsed time is half of `CORNER_LIGHTS_ON_ACK_WAIT`, so `>=` deadline is false — no timeout.
+/// Elapsed time is half of `FRONT_HEADLAMP_ON_ACK_WAIT`, so `>=` deadline is false — no timeout.
 #[test]
 fn given_on_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
     let t0 = Instant::now();
@@ -235,7 +238,7 @@ fn given_on_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
         &FsmState::Idle,
         &current_ctx,
         &FsmEvent::TimerTick,
-        t0 + CORNER_LIGHTS_ON_ACK_WAIT / 2,
+        t0 + FRONT_HEADLAMP_ON_ACK_WAIT / 2,
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OnRequested);
     assert!(!result
@@ -244,7 +247,7 @@ fn given_on_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
         .any(|a| matches!(a, DomainAction::LogWarning(_))));
 }
 
-/// Elapsed time is half of `CORNER_LIGHTS_OFF_ACK_WAIT`, so `>=` deadline is false — no timeout.
+/// Elapsed time is half of `FRONT_HEADLAMP_OFF_ACK_WAIT`, so `>=` deadline is false — no timeout.
 #[test]
 fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
     let t0 = Instant::now();
@@ -258,7 +261,7 @@ fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() 
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::TimerTick,
-        t0 + CORNER_LIGHTS_OFF_ACK_WAIT / 2,
+        t0 + FRONT_HEADLAMP_OFF_ACK_WAIT / 2,
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::OffRequested);
     assert!(!result
@@ -267,7 +270,7 @@ fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() 
         .any(|a| matches!(a, DomainAction::LogWarning(_))));
 }
 
-/// `now - since == CORNER_LIGHTS_ON_ACK_WAIT` satisfies `>=` in `step` — timeout fires.
+/// `now - since == FRONT_HEADLAMP_ON_ACK_WAIT` satisfies `>=` in `step` — timeout fires.
 #[test]
 fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() {
     let t0 = Instant::now();
@@ -281,7 +284,7 @@ fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() 
         &FsmState::Idle,
         &current_ctx,
         &FsmEvent::TimerTick,
-        t0 + CORNER_LIGHTS_ON_ACK_WAIT,
+        t0 + FRONT_HEADLAMP_ON_ACK_WAIT,
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::Off);
     assert!(result.modified_ctx.lighting_ack_pending_since.is_none());
@@ -291,7 +294,7 @@ fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() 
     )));
 }
 
-/// `now - since == CORNER_LIGHTS_OFF_ACK_WAIT` satisfies `>=` in `step` — timeout fires.
+/// `now - since == FRONT_HEADLAMP_OFF_ACK_WAIT` satisfies `>=` in `step` — timeout fires.
 #[test]
 fn given_off_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_on() {
     let t0 = Instant::now();
@@ -305,7 +308,7 @@ fn given_off_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_on() 
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::TimerTick,
-        t0 + CORNER_LIGHTS_OFF_ACK_WAIT,
+        t0 + FRONT_HEADLAMP_OFF_ACK_WAIT,
     );
     assert_eq!(result.modified_ctx.lighting_state, LightingState::On);
     assert!(result.modified_ctx.lighting_ack_pending_since.is_none());
@@ -325,7 +328,7 @@ fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         ambient_lux: 20,
         ..valid_twin_context()
     };
-    let deadline = t0 + CORNER_LIGHTS_ON_ACK_WAIT;
+    let deadline = t0 + FRONT_HEADLAMP_ON_ACK_WAIT;
     let after_timeout = step(
         &FsmState::Idle,
         &ctx_pending,
@@ -346,7 +349,7 @@ fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         &FsmState::Idle,
         &after_timeout.modified_ctx,
         &FsmEvent::TimerTick,
-        deadline + CORNER_LIGHTS_ON_ACK_WAIT,
+        deadline + FRONT_HEADLAMP_ON_ACK_WAIT,
     );
     assert!(!second_tick
         .actions
@@ -364,7 +367,7 @@ fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         ambient_lux: 50,
         ..valid_twin_context()
     };
-    let deadline = t0 + CORNER_LIGHTS_OFF_ACK_WAIT;
+    let deadline = t0 + FRONT_HEADLAMP_OFF_ACK_WAIT;
     let after_timeout = step(
         &FsmState::Driving,
         &ctx_pending,
@@ -385,7 +388,7 @@ fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         &FsmState::Driving,
         &after_timeout.modified_ctx,
         &FsmEvent::TimerTick,
-        deadline + CORNER_LIGHTS_OFF_ACK_WAIT,
+        deadline + FRONT_HEADLAMP_OFF_ACK_WAIT,
     );
     assert!(!second_tick
         .actions
@@ -404,9 +407,9 @@ fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() 
     let result = step(
         &FsmState::Idle,
         &current_ctx,
-        &FsmEvent::CornerLightsActuationIncomplete {
-            direction: CornerLightsSwitchDirection::On,
-            cause: CornerLightsIncompleteCause::TimedOut,
+        &FsmEvent::FrontHeadlampActuationIncomplete {
+            direction: FrontHeadlampSwitchDirection::On,
+            cause: FrontHeadlampIncompleteCause::TimedOut,
         },
         t0,
     );
@@ -438,9 +441,9 @@ fn given_off_requested_when_actuation_incomplete_timed_out_then_recover_to_on() 
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::CornerLightsActuationIncomplete {
-            direction: CornerLightsSwitchDirection::Off,
-            cause: CornerLightsIncompleteCause::TimedOut,
+        &FsmEvent::FrontHeadlampActuationIncomplete {
+            direction: FrontHeadlampSwitchDirection::Off,
+            cause: FrontHeadlampIncompleteCause::TimedOut,
         },
         t0,
     );
@@ -472,9 +475,9 @@ fn given_on_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
     let result = step(
         &FsmState::Idle,
         &current_ctx,
-        &FsmEvent::CornerLightsActuationIncomplete {
-            direction: CornerLightsSwitchDirection::Off,
-            cause: CornerLightsIncompleteCause::TimedOut,
+        &FsmEvent::FrontHeadlampActuationIncomplete {
+            direction: FrontHeadlampSwitchDirection::Off,
+            cause: FrontHeadlampIncompleteCause::TimedOut,
         },
         t0,
     );
@@ -498,9 +501,9 @@ fn given_off_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
     let result = step(
         &FsmState::Driving,
         &current_ctx,
-        &FsmEvent::CornerLightsActuationIncomplete {
-            direction: CornerLightsSwitchDirection::On,
-            cause: CornerLightsIncompleteCause::TimedOut,
+        &FsmEvent::FrontHeadlampActuationIncomplete {
+            direction: FrontHeadlampSwitchDirection::On,
+            cause: FrontHeadlampIncompleteCause::TimedOut,
         },
         t0,
     );
@@ -517,9 +520,9 @@ fn given_lights_off_when_actuation_incomplete_on_then_no_recovery() {
     let result = step(
         &FsmState::Idle,
         &valid_twin_context(),
-        &FsmEvent::CornerLightsActuationIncomplete {
-            direction: CornerLightsSwitchDirection::On,
-            cause: CornerLightsIncompleteCause::TimedOut,
+        &FsmEvent::FrontHeadlampActuationIncomplete {
+            direction: FrontHeadlampSwitchDirection::On,
+            cause: FrontHeadlampIncompleteCause::TimedOut,
         },
         Instant::now(),
     );

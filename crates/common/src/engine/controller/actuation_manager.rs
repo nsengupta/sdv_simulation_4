@@ -5,6 +5,7 @@ use time::{OffsetDateTime, UtcOffset, macros::format_description};
 use crate::digital_twin::DigitalTwinCar;
 use crate::domain_types::VehicleState;
 use crate::engine::controller::{ActuationCommand, CorrelationId};
+use crate::front_headlamp_log::{CMD_OFF, CMD_ON, MSG_REQUEST_OFF, MSG_REQUEST_ON};
 use crate::fsm::DomainAction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,33 +105,33 @@ impl ActuationManager for DefaultActuationManager {
                 // injected logging/event sink.
                 eprintln!("[ALERT @ {}]: {}", action_timestamp(), msg);
             }
-            DomainAction::RequestCornerLightsOn => {
+            DomainAction::RequestFrontHeadlampOn => {
                 // TODO(actuation-child-actor): move actuator command execution to a
                 // dedicated actuation child actor for robust ordering/backpressure.
                 println!(
-                    "[ACTION @ {}]: 💡 Requesting front corner lights ON.",
+                    "[ACTION @ {}]: {CMD_ON} {MSG_REQUEST_ON}",
                     action_timestamp()
                 );
                 if let (Some(tx), Some(correlation_id)) =
                     (&self.actuation_command_tx, self.next_correlation_id())
                 {
                     let _ = tx
-                        .send(ActuationCommand::SwitchCornerLightsOn { correlation_id })
+                        .send(ActuationCommand::SwitchFrontHeadlampOn { correlation_id })
                         .await;
                 }
             }
-            DomainAction::RequestCornerLightsOff => {
+            DomainAction::RequestFrontHeadlampOff => {
                 // TODO(actuation-child-actor): move actuator command execution to a
                 // dedicated actuation child actor for robust ordering/backpressure.
                 println!(
-                    "[ACTION @ {}]: 💡 Requesting front corner lights OFF.",
+                    "[ACTION @ {}]: {CMD_OFF} {MSG_REQUEST_OFF}",
                     action_timestamp()
                 );
                 if let (Some(tx), Some(correlation_id)) =
                     (&self.actuation_command_tx, self.next_correlation_id())
                 {
                     let _ = tx
-                        .send(ActuationCommand::SwitchCornerLightsOff { correlation_id })
+                        .send(ActuationCommand::SwitchFrontHeadlampOff { correlation_id })
                         .await;
                 }
             }

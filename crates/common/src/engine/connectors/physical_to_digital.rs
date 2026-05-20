@@ -1,7 +1,7 @@
 use super::projection::{Projector, ProjectionError};
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::domain_types::PhysicalCarVocabulary;
-use crate::fsm::{CornerLightsIncompleteCause, CornerLightsSwitchDirection, FsmEvent};
+use crate::fsm::{FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, FsmEvent};
 use crate::signals::VssSignal;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -11,27 +11,31 @@ impl Projector<PhysicalCarVocabulary, DigitalTwinCarVocabulary> for PhysicalToDi
     fn project(&self, input: PhysicalCarVocabulary) -> Result<DigitalTwinCarVocabulary, ProjectionError> {
         let fsm = match input {
             PhysicalCarVocabulary::TelemetryUpdate(vss) => match vss {
-                VssSignal::VehicleSpeed(kmh) => FsmEvent::UpdateSpeed(kmh.clamp(0.0, 255.0) as u8),
+                VssSignal::VehicleSpeed(_) => {
+                    return Err(ProjectionError::InvalidPayload(
+                        "observed VehicleSpeed not wired yet; twin derives speed from EngineRpm",
+                    ));
+                }
                 VssSignal::EngineRpm(rpm) => FsmEvent::UpdateRpm(rpm),
                 VssSignal::AmbientLux(lux) => FsmEvent::UpdateAmbientLux(lux),
             },
             PhysicalCarVocabulary::TimerTick => FsmEvent::TimerTick,
             PhysicalCarVocabulary::SystemReset => FsmEvent::PowerOff,
-            PhysicalCarVocabulary::CornerLightsCommandConfirmed { on_command } => {
+            PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command } => {
                 if on_command {
-                    FsmEvent::CornerLightsOnConfirmed
+                    FsmEvent::FrontHeadlampOnAck
                 } else {
-                    FsmEvent::CornerLightsOffConfirmed
+                    FsmEvent::FrontHeadlampOffAck
                 }
             }
-            PhysicalCarVocabulary::CornerLightsCommandRejected { on_command } => {
-                FsmEvent::CornerLightsActuationIncomplete {
+            PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command } => {
+                FsmEvent::FrontHeadlampActuationIncomplete {
                     direction: if on_command {
-                        CornerLightsSwitchDirection::On
+                        FrontHeadlampSwitchDirection::On
                     } else {
-                        CornerLightsSwitchDirection::Off
+                        FrontHeadlampSwitchDirection::Off
                     },
-                    cause: CornerLightsIncompleteCause::NegativeAck,
+                    cause: FrontHeadlampIncompleteCause::NegativeAck,
                 }
             }
         };

@@ -115,7 +115,10 @@ async fn scenario_redline_rpm_from_driving_enters_warning() {
         .unwrap();
 
     let car = get_snapshot(&actor, DEFAULT_ACTOR_TIMEOUT).await;
-    assert!(matches!(car.current_state, FsmState::Warning(_)));
+    assert!(matches!(
+        car.current_state,
+        FsmState::ExtremeOperationWarning(_)
+    ));
 }
 
 #[tokio::test]

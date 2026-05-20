@@ -1,5 +1,5 @@
 use common::domain_types::{
-    RPM_GREENLINE_THRESHOLD, RPM_IDLE, RPM_REDLINE_THRESHOLD,
+    RPM_EXTREME_OPERATION_THRESHOLD, RPM_IDLE, RPM_REDLINE_THRESHOLD,
 };
 
 #[derive(Debug, Clone)]
@@ -13,7 +13,7 @@ pub struct SpeedModelConfig {
 #[derive(Debug, Clone)]
 pub struct RpmModelConfig {
     pub idle_rpm: u16,
-    pub greenline_rpm: u16,
+    pub extreme_operation_rpm: u16,
     pub redline_rpm: u16,
     pub high_target_rpm: f32,
     pub low_target_rpm: f32,
@@ -53,7 +53,7 @@ impl PhysicalWorldModelConfig {
             },
             rpm: RpmModelConfig {
                 idle_rpm: RPM_IDLE,
-                greenline_rpm: RPM_GREENLINE_THRESHOLD,
+                extreme_operation_rpm: RPM_EXTREME_OPERATION_THRESHOLD,
                 redline_rpm: RPM_REDLINE_THRESHOLD,
                 high_target_rpm: 6500.0,
                 low_target_rpm: 1200.0,
@@ -65,10 +65,9 @@ impl PhysicalWorldModelConfig {
                 min_lux: 0,
                 max_lux: 1200,
                 baseline_daylight_lux: 850,
-                jitter_amplitude_lux: 25,
-                tunnel_event_probability_per_tick: 0.0025,
-                // Keep default tunnel darkness deep enough to cross the ON threshold
-                // in common::vehicle_constants (LUX_ON_THRESHOLD) during demos.
+                // ±35 → ~815–885 lux; crosses LUX_ON (840) / LUX_OFF (860) for headlamp demo cycles.
+                jitter_amplitude_lux: 35,
+                tunnel_event_probability_per_tick: 0.01,
                 tunnel_lux_drop: 900,
                 tunnel_duration_ticks_min: 20,
                 tunnel_duration_ticks_max: 80,

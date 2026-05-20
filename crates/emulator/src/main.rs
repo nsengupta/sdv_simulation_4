@@ -1,4 +1,4 @@
-//! Phase 2 generator — the "Virtual ECU".
+//! Phase 2 generator — the "Virtual ECU" (composite wheel RPM + ambient lux on CAN).
 
 pub mod car_physics;
 pub mod models;
@@ -14,13 +14,10 @@ fn main() -> Result<()> {
     let socket = CanSocket::open(interface)?;
     let mut car = PhysicalCar::new();
 
-    println!("🚀 Emulator active on {interface}. Simulating VSS telemetry...");
+    println!("🚀 Emulator active on {interface}. Publishing composite RPM + ambient lux...");
 
     loop {
         car.update();
-
-        let speed_signal = VssSignal::VehicleSpeed(car.speed_kph());
-        socket.write_frame(&speed_signal.to_can_frame()?)?;
 
         let rpm_signal = VssSignal::EngineRpm(car.rpm());
         socket.write_frame(&rpm_signal.to_can_frame()?)?;

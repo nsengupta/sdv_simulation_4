@@ -1,5 +1,7 @@
 /target
 
-.idea/*.xml
+# IntelliJ IDEA IDE files
+.idea/*
+!.idea/.gitignore
 
 *.output

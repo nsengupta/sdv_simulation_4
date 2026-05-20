@@ -1,4 +1,4 @@
-//! Controller/FSM integration tests for corner-lights command outcomes.
+//! Controller/FSM integration tests for front-headlamp command outcomes.
 //!
 //! Scope:
 //! - Uses `VehicleController` at projection boundary.
@@ -12,16 +12,16 @@
 use std::time::Duration;
 
 use common::fsm::LightingState;
-use common::vehicle_constants::CORNER_LIGHTS_ON_ACK_WAIT;
+use common::vehicle_constants::FRONT_HEADLAMP_ON_ACK_WAIT;
 use common::{
     PhysicalCarVocabulary, VehicleController, VehicleControllerRuntimeOptions, VssSignal,
 };
 
 #[tokio::test]
-async fn controller_fsm_corner_lights_ack_path() {
+async fn controller_fsm_front_headlamp_ack_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
-        "E2E-CORNER-ACK-01".to_string(),
+        "E2E-FRONT-HEADLAMP-ACK-01".to_string(),
         runtime_options,
     )
     .await
@@ -35,7 +35,7 @@ async fn controller_fsm_corner_lights_ack_path() {
         .await
         .expect("low lux event");
     controller
-        .submit_physical_car_event(PhysicalCarVocabulary::CornerLightsCommandConfirmed {
+        .submit_physical_car_event(PhysicalCarVocabulary::FrontHeadlampCommandConfirmed {
             on_command: true,
         })
         .await
@@ -50,10 +50,10 @@ async fn controller_fsm_corner_lights_ack_path() {
 }
 
 #[tokio::test]
-async fn controller_fsm_corner_lights_nack_path() {
+async fn controller_fsm_front_headlamp_nack_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
-        "E2E-CORNER-NACK-01".to_string(),
+        "E2E-FRONT-HEADLAMP-NACK-01".to_string(),
         runtime_options,
     )
     .await
@@ -67,7 +67,7 @@ async fn controller_fsm_corner_lights_nack_path() {
         .await
         .expect("low lux event");
     controller
-        .submit_physical_car_event(PhysicalCarVocabulary::CornerLightsCommandRejected {
+        .submit_physical_car_event(PhysicalCarVocabulary::FrontHeadlampCommandRejected {
             on_command: true,
         })
         .await
@@ -82,10 +82,10 @@ async fn controller_fsm_corner_lights_nack_path() {
 }
 
 #[tokio::test]
-async fn controller_fsm_corner_lights_no_response_timeout_path() {
+async fn controller_fsm_front_headlamp_no_response_timeout_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
-        "E2E-CORNER-TIMEOUT-01".to_string(),
+        "E2E-FRONT-HEADLAMP-TIMEOUT-01".to_string(),
         runtime_options,
     )
     .await
@@ -100,7 +100,7 @@ async fn controller_fsm_corner_lights_no_response_timeout_path() {
         .expect("low lux event");
 
     // No ACK/NACK event sent: emulate silence, then drive TimerTick past ACK wait deadline.
-    tokio::time::sleep(CORNER_LIGHTS_ON_ACK_WAIT + Duration::from_millis(25)).await;
+    tokio::time::sleep(FRONT_HEADLAMP_ON_ACK_WAIT + Duration::from_millis(25)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TimerTick)
         .await

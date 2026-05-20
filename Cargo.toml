@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/common",
+    "crates/vehicle_device_bus",
     "crates/gateway",
     "crates/emulator",
+    "crates/front_headlamp_actuator",
 ]

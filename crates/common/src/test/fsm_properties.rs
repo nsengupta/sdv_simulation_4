@@ -5,36 +5,42 @@ use std::time::{Duration, Instant};
 
 use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, LightingState, VehicleContext};
 use crate::vehicle_constants::{LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD};
+use crate::vehicle_kinematics::refresh_context_speed;
+
+fn ctx_with_rpm(rpm: u16) -> VehicleContext {
+    let mut ctx = VehicleContext {
+        rpm,
+        ..VehicleContext::default()
+    };
+    refresh_context_speed(&mut ctx);
+    ctx
+}
 
 prop_compose! {
-    fn arb_context()(rpm in 0..8000u16, speed in 0..250u8) -> VehicleContext {
-        VehicleContext {
+    fn arb_context()(rpm in 0..8000u16) -> VehicleContext {
+        let mut ctx = VehicleContext {
             rpm,
-            speed,
             fuel_level: 85,
             oil_pressure: 30,
             tyre_pressure_ok: true,
             ambient_lux: 100,
             lighting_state: LightingState::Off,
-        }
+            ..VehicleContext::default()
+        };
+        refresh_context_speed(&mut ctx);
+        ctx
     }
 }
 
 fn arb_fsm_event() -> impl Strategy<Value = FsmEvent> {
     // Avoid `Just(FsmEvent::...)` so this stays valid if `FsmEvent` ever drops `Clone` again.
-    (
-        0u8..6u8,
-        any::<u16>(),
-        any::<u8>(),
-    )
-        .prop_map(|(tag, rpm, speed)| match tag {
-            0 => FsmEvent::PowerOn,
-            1 => FsmEvent::PowerOff,
-            2 => FsmEvent::TimerTick,
-            3 => FsmEvent::UpdateRpm(rpm),
-            4 => FsmEvent::UpdateSpeed(speed),
-            _ => FsmEvent::TimerTick,
-        })
+    (0u8..5u8, any::<u16>()).prop_map(|(tag, rpm)| match tag {
+        0 => FsmEvent::PowerOn,
+        1 => FsmEvent::PowerOff,
+        2 => FsmEvent::TimerTick,
+        3 => FsmEvent::UpdateRpm(rpm),
+        _ => FsmEvent::UpdateAmbientLux(100),
+    })
 }
 
 fn arb_fsm_state() -> impl Strategy<Value = FsmState> {
@@ -43,7 +49,7 @@ fn arb_fsm_state() -> impl Strategy<Value = FsmState> {
         Just(FsmState::Idle),
         Just(FsmState::Driving),
         any::<u64>().prop_map(|n| {
-            FsmState::Warning(Instant::now() - Duration::from_nanos(1 + (n % 1_000_000_000)))
+            FsmState::ExtremeOperationWarning(Instant::now() - Duration::from_nanos(1 + (n % 1_000_000_000)))
         }),
     ]
 }
@@ -58,8 +64,8 @@ proptest! {
             ..VehicleContext::default()
         };
         let result = step(&FsmState::Idle, &ctx, &FsmEvent::UpdateAmbientLux(lux), Instant::now());
-        prop_assert!(!result.actions.contains(&DomainAction::RequestCornerLightsOn));
-        prop_assert!(!result.actions.contains(&DomainAction::RequestCornerLightsOff));
+        prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOn));
+        prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOff));
         prop_assert_eq!(result.modified_ctx.lighting_state, LightingState::Off);
     }
 
@@ -72,8 +78,8 @@ proptest! {
             ..VehicleContext::default()
         };
         let result = step(&FsmState::Driving, &ctx, &FsmEvent::UpdateAmbientLux(lux), Instant::now());
-        prop_assert!(!result.actions.contains(&DomainAction::RequestCornerLightsOn));
-        prop_assert!(!result.actions.contains(&DomainAction::RequestCornerLightsOff));
+        prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOn));
+        prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOff));
         prop_assert_eq!(result.modified_ctx.lighting_state, LightingState::On);
     }
 }
@@ -123,17 +129,13 @@ proptest! {
         state in prop_oneof![
             Just(FsmState::Driving),
             any::<u64>().prop_map(|n| {
-                FsmState::Warning(Instant::now() - Duration::from_nanos(1 + (n % 1_000_000_000)))
+                FsmState::ExtremeOperationWarning(Instant::now() - Duration::from_nanos(1 + (n % 1_000_000_000)))
             }),
         ],
         _tag in 0u8..1u8,
     ) {
         let event = FsmEvent::PowerOff;
-        let ctx = VehicleContext {
-            rpm: 3000,
-            speed: 50,
-            ..VehicleContext::default()
-        };
+        let ctx = ctx_with_rpm(3000);
         let next = transition(&state, &event, &ctx, Instant::now());
 
         // INVARIANT: In these states, PowerOff MUST be ignored.

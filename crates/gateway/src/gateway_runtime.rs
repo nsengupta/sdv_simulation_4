@@ -2,35 +2,25 @@
 
 use anyhow::Result;
 use common::{
-    PhysicalCarVocabulary, VehicleController, VehicleControllerRuntimeOptions, VehicleEvent,
-    VssSignal,
+    ACK_OFF, ACK_ON, MSG_ACK_OFF, MSG_ACK_ON, MSG_NACK_OFF, MSG_NACK_ON, NACK_OFF, NACK_ON,
+    ActuationCommand, PhysicalCarVocabulary, VehicleController, VehicleControllerRuntimeOptions,
+    VehicleEvent, VssSignal,
 };
 use socketcan::{CanSocket, Socket};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use vehicle_device_bus::devices::front_headlamp::can::{decode_payload_from_can_frame, encode_command_frame};
+use vehicle_device_bus::devices::front_headlamp::policy::{FrontHeadlampPolicy, FrontHeadlampPolicyDecision};
 
-use crate::actuation_scaffold;
-use crate::actuation_scaffold::DEFAULT_ACK_NACK_RESPONSE_PROB;
-
-/// If set to a float in `0.0..=1.0`, the corner-light plant randomly sends **no** ACK after the
-/// command frame (see `actuation_scaffold`).
-pub const ENV_PLANT_DROP_RESPONSE_PROB: &str = "CORNER_LIGHT_PLANT_DROP_RESPONSE_PROB";
-/// If set to a float in `0.0..=1.0`, this controls ACK-vs-NACK split **when the plant responds**.
-///
-/// Semantics: value is `P(ACK)`; default is [`DEFAULT_ACK_NACK_RESPONSE_PROB`] (currently `0.7`).
-pub const ENV_PLANT_ACK_NACK_RESPONSE_PROB: &str = "CORNER_LIGHT_PLANT_ACK_NACK_RESPONSE_PROB";
-use crate::devices::corner_lights::can::decode_payload_from_can_frame;
-use crate::devices::corner_lights::policy::{CornerLightPolicy, CornerLightPolicyDecision};
 use crate::ingress;
 
-/// Default SocketCAN interface (matches emulator).
+/// Default SocketCAN interface (matches emulator and front_headlamp_actuator).
 pub const DEFAULT_CAN_INTERFACE: &str = "vcan0";
 
 const TIMER_TICK_MS: u64 = 100;
-/// Simulated actuator delay before the plant writes the ACK frame onto the same CAN interface.
-const ACTUATION_ACK_DELAY_MS: u64 = 150;
+const ACTUATION_COMMAND_CHANNEL_CAPACITY: usize = 64;
 
 pub struct GatewayLaunchConfig<'a> {
     pub car_identity: &'a str,
@@ -49,13 +39,12 @@ enum CanIngressEnvelope {
 }
 
 pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
-    let corner_light_policy = Arc::new(Mutex::new(CornerLightPolicy::default()));
-    let (policy_cmd_tx, policy_cmd_rx) = actuation_scaffold::actuator_command_channel();
-    let (plant_cmd_tx, plant_cmd_rx) = actuation_scaffold::actuator_command_channel();
+    let front_headlamp_policy = Arc::new(Mutex::new(FrontHeadlampPolicy::default()));
+    let (actuation_cmd_tx, actuation_cmd_rx) = mpsc::channel(ACTUATION_COMMAND_CHANNEL_CAPACITY);
 
     let runtime_options = VehicleControllerRuntimeOptions {
         log_timer_tick: launch.print_timer_tick,
-        actuation_command_tx: Some(policy_cmd_tx),
+        actuation_command_tx: Some(actuation_cmd_tx),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -66,35 +55,10 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("spawn actor: {e}"))?;
 
-    let plant_dont_respond_prob = std::env::var(ENV_PLANT_DROP_RESPONSE_PROB)
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|p| (0.0..=1.0).contains(p))
-        .unwrap_or(0.0);
-    let plant_ack_nack_response_prob = std::env::var(ENV_PLANT_ACK_NACK_RESPONSE_PROB)
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|p| (0.0..=1.0).contains(p))
-        .unwrap_or(DEFAULT_ACK_NACK_RESPONSE_PROB);
-    if plant_dont_respond_prob > 0.0 {
-        println!(
-            "[gateway] {}={plant_dont_respond_prob} — corner-light plant may sit tight (no ACK) after each command; twin uses TimerTick ACK timeout when pending",
-            ENV_PLANT_DROP_RESPONSE_PROB
-        );
-    }
-    println!(
-        "[gateway] {}={plant_ack_nack_response_prob} (P(ACK) when plant responds; default via actuation scaffold)",
-        ENV_PLANT_ACK_NACK_RESPONSE_PROB
-    );
-
-    spawn_corner_light_command_router(policy_cmd_rx, plant_cmd_tx, corner_light_policy.clone());
-
-    actuation_scaffold::spawn_corner_light_can_plant(
-        plant_cmd_rx,
+    spawn_front_headlamp_command_publisher(
+        actuation_cmd_rx,
         launch.can_interface.to_string(),
-        Duration::from_millis(ACTUATION_ACK_DELAY_MS),
-        plant_dont_respond_prob,
-        plant_ack_nack_response_prob,
+        front_headlamp_policy.clone(),
     );
 
     controller
@@ -108,6 +72,9 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
         "⚡ Gateway on {} — CAN → VehicleEvent → PhysicalCarVocabulary → DigitalTwinCarVocabulary → VirtualCarActor",
         launch.can_interface
     );
+    println!(
+        "[gateway] front-headlamp CMD egress on CAN; run `cargo run -p front_headlamp_actuator` for ACK/NACK"
+    );
     if launch.print_timer_tick {
         println!("[gateway] TimerTick heartbeat logging enabled (--print-timer-tick)");
     }
@@ -115,7 +82,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     let (can_tx, can_rx) = mpsc::unbounded_channel();
     let _can_reader = spawn_can_reader_thread(
         launch.can_interface.to_string(),
-        corner_light_policy,
+        front_headlamp_policy,
         can_tx,
     )?;
     run_can_ingress_dispatch_loop(controller, can_rx).await
@@ -132,14 +99,9 @@ fn spawn_timer_tick_loop(controller: VehicleController) {
 }
 
 /// Dedicated OS thread for blocking `read_frame()` loop.
-///
-/// Why this is not an async task:
-/// - `read_frame()` is a blocking syscall.
-/// - this listener runs forever in steady-state.
-/// - a dedicated thread avoids occupying Tokio worker/blocking-pool capacity indefinitely.
 fn spawn_can_reader_thread(
     can_interface: String,
-    corner_light_policy: Arc<Mutex<CornerLightPolicy>>,
+    front_headlamp_policy: Arc<Mutex<FrontHeadlampPolicy>>,
     tx: mpsc::UnboundedSender<CanIngressEnvelope>,
 ) -> Result<JoinHandle<()>> {
     let socket = CanSocket::open(&can_interface)?;
@@ -156,6 +118,10 @@ fn spawn_can_reader_thread(
                     }
                 };
                 if let Some(sig) = VssSignal::from_can_frame(&frame) {
+                    if matches!(sig, VssSignal::VehicleSpeed(_)) {
+                        // Observed speed ECU path (slip/clutch/gear) — future milestone.
+                        continue;
+                    }
                     let ev = VehicleEvent::TelemetryUpdate(sig);
                     let physical = ingress::vehicle_event_to_physical_vocabulary(ev);
                     if tx.send(CanIngressEnvelope::Physical(physical)).is_err() {
@@ -165,11 +131,13 @@ fn spawn_can_reader_thread(
                 }
                 if let Some(payload) = decode_payload_from_can_frame(&frame) {
                     let decision = {
-                        let mut policy = corner_light_policy.lock().expect("corner-light policy lock");
+                        let mut policy = front_headlamp_policy
+                            .lock()
+                            .expect("front-headlamp policy lock");
                         policy.on_response(payload)
                     };
                     match decision {
-                        CornerLightPolicyDecision::Accept {
+                        FrontHeadlampPolicyDecision::Accept {
                             physical,
                             session,
                             sequence,
@@ -185,7 +153,7 @@ fn spawn_can_reader_thread(
                                 break;
                             }
                         }
-                        CornerLightPolicyDecision::Ignore(reason) => {
+                        FrontHeadlampPolicyDecision::Ignore(reason) => {
                             eprintln!(
                                 "[actuation-can-ingress ignored]: reason={reason} session={} seq={}",
                                 payload.session_id, payload.sequence_no
@@ -198,23 +166,65 @@ fn spawn_can_reader_thread(
     Ok(handle)
 }
 
-fn spawn_corner_light_command_router(
-    mut policy_cmd_rx: mpsc::Receiver<common::ActuationCommand>,
-    plant_cmd_tx: mpsc::Sender<common::ActuationCommand>,
-    corner_light_policy: Arc<Mutex<CornerLightPolicy>>,
+/// Egress: twin actuation intent → policy pending state → CMD frame on CAN.
+fn spawn_front_headlamp_command_publisher(
+    mut actuation_cmd_rx: mpsc::Receiver<ActuationCommand>,
+    can_interface: String,
+    front_headlamp_policy: Arc<Mutex<FrontHeadlampPolicy>>,
 ) {
     tokio::spawn(async move {
-        while let Some(cmd) = policy_cmd_rx.recv().await {
+        let socket = match CanSocket::open(&can_interface) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "[gateway]: cannot open CAN {can_interface} for front-headlamp CMD TX: {e}"
+                );
+                return;
+            }
+        };
+        while let Some(cmd) = actuation_cmd_rx.recv().await {
             {
-                let mut policy = corner_light_policy.lock().expect("corner-light policy lock");
+                let mut policy = front_headlamp_policy
+                    .lock()
+                    .expect("front-headlamp policy lock");
                 policy.on_command_sent(&cmd);
             }
-            if let Err(e) = plant_cmd_tx.send(cmd).await {
-                eprintln!("[gateway]: failed to route actuation command to plant: {e}");
-                break;
+            match encode_command_frame(&cmd) {
+                Ok(frame) => {
+                    if let Err(e) = socket.write_frame(&frame) {
+                        eprintln!("[gateway]: front-headlamp CMD write_frame failed: {e:?}");
+                    }
+                }
+                Err(e) => eprintln!("[gateway]: encode front-headlamp CMD failed: {e:?}"),
             }
         }
     });
+}
+
+fn log_front_headlamp_ingress(session: u16, sequence: u32, physical: &PhysicalCarVocabulary) {
+    match physical {
+        PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: true } => {
+            println!(
+                "[actuation-can-ingress session={session} seq={sequence}]: {ACK_ON} {MSG_ACK_ON}"
+            );
+        }
+        PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: false } => {
+            println!(
+                "[actuation-can-ingress session={session} seq={sequence}]: {ACK_OFF} {MSG_ACK_OFF}"
+            );
+        }
+        PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command: true } => {
+            println!(
+                "[actuation-can-ingress session={session} seq={sequence}]: {NACK_ON} {MSG_NACK_ON}"
+            );
+        }
+        PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command: false } => {
+            println!(
+                "[actuation-can-ingress session={session} seq={sequence}]: {NACK_OFF} {MSG_NACK_OFF}"
+            );
+        }
+        _ => {}
+    }
 }
 
 async fn run_can_ingress_dispatch_loop(
@@ -234,10 +244,7 @@ async fn run_can_ingress_dispatch_loop(
                 session,
                 sequence,
             } => {
-                println!(
-                    "[actuation-can-ingress wire session={session} seq={sequence}]: {:?} (CAN path)",
-                    physical
-                );
+                log_front_headlamp_ingress(session, sequence, &physical);
                 controller
                     .submit_physical_car_event(physical)
                     .await

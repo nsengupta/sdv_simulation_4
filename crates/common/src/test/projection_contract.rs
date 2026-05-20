@@ -1,7 +1,7 @@
 //! Contract tests for projection boundaries between physical and digital vocabularies.
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::engine::connectors::{PhysicalToDigitalProjector, Projector};
+use crate::engine::connectors::{PhysicalToDigitalProjector, ProjectionError, Projector};
 use crate::fsm::FsmEvent;
 use crate::{PhysicalCarVocabulary, VssSignal};
 
@@ -30,23 +30,12 @@ fn given_system_reset_when_projected_then_maps_to_fsm_power_off() {
 }
 
 #[test]
-fn given_speed_signal_when_projected_then_clamps_to_u8_bounds() {
+fn given_observed_speed_signal_when_projected_then_rejects_until_ecu_path_exists() {
     let projector = PhysicalToDigitalProjector;
-    let low = projector
-        .project(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::VehicleSpeed(-1.0)))
-        .expect("low speed projection must succeed");
-    let high = projector
-        .project(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::VehicleSpeed(500.0)))
-        .expect("high speed projection must succeed");
-
-    match low {
-        DigitalTwinCarVocabulary::Fsm(FsmEvent::UpdateSpeed(v)) => assert_eq!(v, 0),
-        other => panic!("unexpected low speed mapping: {other:?}"),
-    }
-    match high {
-        DigitalTwinCarVocabulary::Fsm(FsmEvent::UpdateSpeed(v)) => assert_eq!(v, 255),
-        other => panic!("unexpected high speed mapping: {other:?}"),
-    }
+    let err = projector
+        .project(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::VehicleSpeed(50.0)))
+        .expect_err("observed speed must not ingress as UpdateSpeed");
+    assert!(matches!(err, ProjectionError::InvalidPayload(_)));
 }
 
 #[test]
@@ -74,42 +63,42 @@ fn given_ambient_lux_signal_when_projected_then_maps_to_fsm_ambient_lux() {
 }
 
 #[test]
-fn given_corner_lights_on_confirmed_when_projected_then_maps_to_fsm() {
+fn given_front_headlamp_on_confirmed_when_projected_then_maps_to_fsm() {
     let projector = PhysicalToDigitalProjector;
     let out = projector
-        .project(PhysicalCarVocabulary::CornerLightsCommandConfirmed { on_command: true })
+        .project(PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: true })
         .expect("on ack projection must succeed");
     match out {
-        DigitalTwinCarVocabulary::Fsm(FsmEvent::CornerLightsOnConfirmed) => {}
+        DigitalTwinCarVocabulary::Fsm(FsmEvent::FrontHeadlampOnAck) => {}
         other => panic!("unexpected on ack mapping: {other:?}"),
     }
 }
 
 #[test]
-fn given_corner_lights_off_confirmed_when_projected_then_maps_to_fsm() {
+fn given_front_headlamp_off_confirmed_when_projected_then_maps_to_fsm() {
     let projector = PhysicalToDigitalProjector;
     let out = projector
-        .project(PhysicalCarVocabulary::CornerLightsCommandConfirmed { on_command: false })
+        .project(PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: false })
         .expect("off ack projection must succeed");
     match out {
-        DigitalTwinCarVocabulary::Fsm(FsmEvent::CornerLightsOffConfirmed) => {}
+        DigitalTwinCarVocabulary::Fsm(FsmEvent::FrontHeadlampOffAck) => {}
         other => panic!("unexpected off ack mapping: {other:?}"),
     }
 }
 
 #[test]
-fn given_corner_lights_rejected_when_projected_then_maps_to_incomplete_with_negative_ack() {
+fn given_front_headlamp_rejected_when_projected_then_maps_to_incomplete_with_negative_ack() {
     let projector = PhysicalToDigitalProjector;
     let out = projector
-        .project(PhysicalCarVocabulary::CornerLightsCommandRejected { on_command: true })
+        .project(PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command: true })
         .expect("reject projection must succeed");
     match out {
-        DigitalTwinCarVocabulary::Fsm(FsmEvent::CornerLightsActuationIncomplete {
+        DigitalTwinCarVocabulary::Fsm(FsmEvent::FrontHeadlampActuationIncomplete {
             direction,
             cause,
         }) => {
-            assert!(matches!(direction, crate::fsm::CornerLightsSwitchDirection::On));
-            assert!(matches!(cause, crate::fsm::CornerLightsIncompleteCause::NegativeAck));
+            assert!(matches!(direction, crate::fsm::FrontHeadlampSwitchDirection::On));
+            assert!(matches!(cause, crate::fsm::FrontHeadlampIncompleteCause::NegativeAck));
         }
         other => panic!("unexpected rejected mapping: {other:?}"),
     }

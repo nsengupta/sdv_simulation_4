@@ -4,7 +4,7 @@ pub mod step;
 
 pub use engine::{output, transition};
 pub use machineries::{
-    CornerLightsIncompleteCause, CornerLightsSwitchDirection, FsmAction, FsmEvent, FsmState,
+    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState,
     LightingState, VehicleContext,
 };
 pub use step::{step, ActorModeHintFromDomain, DomainAction, StepResult, TransitionRecord};

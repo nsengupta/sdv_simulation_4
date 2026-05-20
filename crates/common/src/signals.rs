@@ -6,7 +6,7 @@ pub const ID_AMBIENT_LUX: u16 = 0x103;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VssSignal {
-    /// Vehicle.Speed (Unit: km/h, Scaling: 0.01)
+    /// Vehicle.Speed (Unit: km/h, Scaling: 0.01). Decoded for future observed-speed ECUs; twin derives speed from RPM today.
     VehicleSpeed(f64),
     /// Vehicle.Powertrain.CombustionEngine.Speed (Unit: rpm, Scaling: 1.0)
     EngineRpm(u16),
@@ -17,6 +17,8 @@ pub enum VssSignal {
 impl VssSignal {
     /// Decode a raw CAN Frame into a VSS Signal
     pub fn from_can_frame(frame: &CanFrame) -> Option<Self> {
+        // Only standard (11-bit) IDs are supported here; extended / FD-only shapes are rejected.
+        // For a standard frame, `as_raw()` is the numeric ID (0..=0x7FF).
         let id = match frame.id() {
             socketcan::Id::Standard(s) => s.as_raw(),
             _ => return None,
@@ -44,7 +46,8 @@ impl VssSignal {
 
     /// Encode a VSS Signal into a raw CAN Frame
     pub fn to_can_frame(&self) -> Result<CanFrame, socketcan::Error> {
-        // 1. Helper for safe ID creation
+        // 1. Helper for safe ID creation (`socketcan::StandardId`).
+        // `StandardId::new` accepts only values valid for an 11-bit standard CAN ID; otherwise `None`.
         let can_standard_id = |id: u16| {
             StandardId::new(id).ok_or_else(|| {
                 socketcan::Error::from(std::io::Error::new(

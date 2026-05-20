@@ -252,6 +252,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "front_headlamp_actuator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "common",
+ "rand 0.8.6",
+ "socketcan",
+ "vehicle_device_bus",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -346,9 +357,9 @@ dependencies = [
  "anyhow",
  "common",
  "ractor",
- "rand 0.8.6",
  "socketcan",
  "tokio",
+ "vehicle_device_bus",
 ]
 
 [[package]]
@@ -1140,6 +1151,15 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "vehicle_device_bus"
+version = "0.1.0"
+dependencies = [
+ "common",
+ "socketcan",
+ "tokio",
+]
 
 [[package]]
 name = "wait-timeout"

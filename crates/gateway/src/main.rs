@@ -5,8 +5,6 @@
 use anyhow::Result;
 use std::env;
 
-mod actuation_scaffold;
-mod devices;
 mod gateway_runtime;
 mod ingress;
 
