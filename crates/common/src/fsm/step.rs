@@ -21,7 +21,7 @@ use super::machineries::{
     FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState,
     LightingState, VehicleContext,
 };
-use crate::engine::op_strategy::transition_map::{output, transition};
+use crate::engine::op_strategy::transition_map::{output, transition, TransitionNote};
 use crate::vehicle_constants::{
     FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
 };
@@ -94,11 +94,24 @@ pub fn step(
         modified_ctx.speed = 0;
     }
 
-    let next_state = transition(current_state, event, &modified_ctx, now);
+    let transition_result = transition(current_state, event, &modified_ctx, now);
+    let next_state = transition_result.next_state.clone();
     let mut actions: Vec<DomainAction> = output(current_state, &next_state, &modified_ctx)
         .into_iter()
         .filter_map(map_fsm_action)
         .collect();
+
+    // Emit domain action for any noteworthy non-transition from the strategy layer.
+    if let Some(note) = &transition_result.note {
+        match note {
+            TransitionNote::RejectedPowerOff => {
+                actions.push(DomainAction::LogWarning(format!(
+                    "[REJECTED]: PowerOff is invalid while in state {:?}",
+                    current_state
+                )));
+            }
+        }
+    }
 
     match (&current_ctx.lighting_state, event) {
         (LightingState::Off, FsmEvent::UpdateAmbientLux(lux)) if *lux <= LUX_ON_THRESHOLD => {

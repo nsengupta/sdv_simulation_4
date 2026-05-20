@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use time::{OffsetDateTime, UtcOffset, macros::format_description};
 
+use crate::diagnostic::{DiagnosticMessage, DiagnosticSink};
 use crate::digital_twin::DigitalTwinCar;
 use crate::domain_types::VehicleState;
 use crate::engine::controller::{ActuationCommand, CorrelationId};
@@ -22,12 +24,24 @@ pub trait ActuationManager: Send + Sync {
     ) -> Result<(), ActuationError>;
 }
 
-#[derive(Debug)]
 pub struct DefaultActuationManager {
     source_id: Option<String>,
     session_id: u64,
     next_sequence_no: AtomicU64,
     actuation_command_tx: Option<tokio::sync::mpsc::Sender<ActuationCommand>>,
+    diagnostic_sink: Option<Arc<dyn DiagnosticSink>>,
+}
+
+impl std::fmt::Debug for DefaultActuationManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultActuationManager")
+            .field("source_id", &self.source_id)
+            .field("session_id", &self.session_id)
+            .field("next_sequence_no", &self.next_sequence_no)
+            .field("actuation_command_tx", &self.actuation_command_tx)
+            .field("diagnostic_sink", &self.diagnostic_sink.as_ref().map(|_| "Some(Arc<dyn DiagnosticSink>)"))
+            .finish()
+    }
 }
 
 impl DefaultActuationManager {
@@ -41,7 +55,12 @@ impl DefaultActuationManager {
             session_id,
             next_sequence_no: AtomicU64::new(1),
             actuation_command_tx: Some(actuation_command_tx),
+            diagnostic_sink: None,
         }
+    }
+
+    pub fn set_diagnostic_sink(&mut self, sink: Option<Arc<dyn DiagnosticSink>>) {
+        self.diagnostic_sink = sink;
     }
 
     fn next_correlation_id(&self) -> Option<CorrelationId> {
@@ -62,6 +81,7 @@ impl Default for DefaultActuationManager {
             session_id: 0,
             next_sequence_no: AtomicU64::new(1),
             actuation_command_tx: None,
+            diagnostic_sink: None,
         }
     }
 }
@@ -73,45 +93,58 @@ impl ActuationManager for DefaultActuationManager {
         action: &DomainAction,
         twin: &DigitalTwinCar,
     ) -> Result<(), ActuationError> {
+        let sink = &self.diagnostic_sink;
         match action {
             DomainAction::StartBuzzer => {
                 // TODO(actuation-child-actor): offload connector I/O to a child actor
                 // and keep parent actor loop non-blocking under slow transports.
-                println!(
-                    "[ACTION @ {}]: 🔊 BUZZER ON - High Stress Detected!",
-                    action_timestamp()
-                );
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::action(
+                        "DefaultActuationManager",
+                        format!("[ACTION @ {}]: 🔊 BUZZER ON - High Stress Detected!", action_timestamp()),
+                    ));
+                }
             }
             DomainAction::StopBuzzer => {
                 // TODO(actuation-child-actor): offload connector I/O to a child actor
                 // and keep parent actor loop non-blocking under slow transports.
-                println!(
-                    "[ACTION @ {}]: 🔇 BUZZER OFF - System Normal.",
-                    action_timestamp()
-                );
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::action(
+                        "DefaultActuationManager",
+                        format!("[ACTION @ {}]: 🔇 BUZZER OFF - System Normal.", action_timestamp()),
+                    ));
+                }
             }
             DomainAction::PublishStateSync => {
                 // TODO(actuation-egress): publish through an injected egress connector
                 // (CAN/Zenoh/uProtocol) instead of default stdout logging.
                 let public_state = VehicleState::from(&twin.current_state);
-                println!(
-                    "[ACTION @ {}]: 📡 Publishing to Cloud: {:?}",
-                    action_timestamp(),
-                    public_state
-                );
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::info(
+                        "DefaultActuationManager",
+                        format!("[ACTION @ {}]: 📡 Publishing to Cloud: {:?}", action_timestamp(), public_state),
+                    ));
+                }
             }
             DomainAction::LogWarning(msg) => {
                 // TODO(actuation-observability): route structured warnings to an
                 // injected logging/event sink.
-                eprintln!("[ALERT @ {}]: {}", action_timestamp(), msg);
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::warning(
+                        "DefaultActuationManager",
+                        format!("[ALERT @ {}]: {}", action_timestamp(), msg),
+                    ));
+                }
             }
             DomainAction::RequestFrontHeadlampOn => {
                 // TODO(actuation-child-actor): move actuator command execution to a
                 // dedicated actuation child actor for robust ordering/backpressure.
-                println!(
-                    "[ACTION @ {}]: {CMD_ON} {MSG_REQUEST_ON}",
-                    action_timestamp()
-                );
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::action(
+                        "DefaultActuationManager",
+                        format!("[ACTION @ {}]: {CMD_ON} {MSG_REQUEST_ON}", action_timestamp()),
+                    ));
+                }
                 if let (Some(tx), Some(correlation_id)) =
                     (&self.actuation_command_tx, self.next_correlation_id())
                 {
@@ -123,10 +156,12 @@ impl ActuationManager for DefaultActuationManager {
             DomainAction::RequestFrontHeadlampOff => {
                 // TODO(actuation-child-actor): move actuator command execution to a
                 // dedicated actuation child actor for robust ordering/backpressure.
-                println!(
-                    "[ACTION @ {}]: {CMD_OFF} {MSG_REQUEST_OFF}",
-                    action_timestamp()
-                );
+                if let Some(sink) = sink {
+                    let _ = sink.try_emit(DiagnosticMessage::action(
+                        "DefaultActuationManager",
+                        format!("[ACTION @ {}]: {CMD_OFF} {MSG_REQUEST_OFF}", action_timestamp()),
+                    ));
+                }
                 if let (Some(tx), Some(correlation_id)) =
                     (&self.actuation_command_tx, self.next_correlation_id())
                 {

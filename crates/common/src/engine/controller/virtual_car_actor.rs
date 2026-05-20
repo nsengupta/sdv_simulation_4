@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::sync::Arc;
 
+use crate::diagnostic::{DiagnosticMessage, DiagnosticSink, TokioMpscDiagnosticSink, diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_transition_sink_full, diag_transition_sink_closed};
 use crate::digital_twin::{DigitalTwinCar, DigitalTwinCarVocabulary};
 use crate::engine::controller::actuation_manager::{
     ActuationManager, DefaultActuationManager,
@@ -49,6 +50,7 @@ pub struct VirtualCarRuntimeState {
     next_sequence_no: u64,
     runtime_options: VehicleControllerRuntimeOptions,
     actuation_manager: Arc<dyn ActuationManager>,
+    diagnostic_sink: Option<Arc<dyn DiagnosticSink>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,23 +87,40 @@ impl Actor for VirtualCarActor {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let identity = args.identity;
-        println!(
-            "Physical Car name: {identity}, initializing its Digital Twin ..."
-        );
+        let identity = args.identity.clone();
+
+        // Wrap optional diagnostic TX channel into a DiagnosticSink.
+        let diagnostic_sink: Option<Arc<dyn DiagnosticSink>> = args
+            .runtime_options
+            .diagnostic_tx
+            .clone()
+            .map(|tx| Arc::new(TokioMpscDiagnosticSink::new(tx)) as Arc<dyn DiagnosticSink>);
+
+        // Emit init message if sink is available.
+        if let Some(sink) = &diagnostic_sink {
+            let _ = sink.try_emit(DiagnosticMessage::info(
+                "VirtualCarActor",
+                format!("Physical Car name: {identity}, initializing its Digital Twin ..."),
+            ));
+        }
+
         let actuation_manager: Arc<dyn ActuationManager> =
             if let Some(tx) = args.runtime_options.actuation_command_tx.clone() {
                 let session_id = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0);
-                Arc::new(DefaultActuationManager::with_command_channel(
+                let mut manager = DefaultActuationManager::with_command_channel(
                     identity.clone(),
                     session_id,
                     tx,
-                ))
+                );
+                manager.set_diagnostic_sink(diagnostic_sink.clone());
+                Arc::new(manager)
             } else {
-                Arc::new(DefaultActuationManager::default())
+                let mut manager = DefaultActuationManager::default();
+                manager.set_diagnostic_sink(diagnostic_sink.clone());
+                Arc::new(manager)
             };
 
         Ok(VirtualCarRuntimeState {
@@ -113,6 +132,7 @@ impl Actor for VirtualCarActor {
             next_sequence_no: 1,
             runtime_options: args.runtime_options,
             actuation_manager,
+            diagnostic_sink,
         })
     }
 
@@ -128,10 +148,9 @@ impl Actor for VirtualCarActor {
             Fsm(evt) => {
                 if matches!(evt, FsmEvent::TimerTick) && runtime_state.runtime_options.log_timer_tick {
                     // TODO: rate-limit once structured logging is introduced.
-                    println!(
-                        "[{}]: received heartbeat TimerTick",
-                        runtime_state.twin_car.identity
-                    );
+                    if let Some(sink) = &runtime_state.diagnostic_sink {
+                        let _ = sink.try_emit(diag_timer_tick(&runtime_state.twin_car.identity));
+                    }
                 }
                 let result =
                     fsm::step(&runtime_state.twin_car.current_state, &runtime_state.twin_car.context, &evt, std::time::Instant::now());
@@ -158,20 +177,25 @@ impl Actor for VirtualCarActor {
                                 .execute(&other_action, &runtime_state.twin_car)
                                 .await
                             {
-                                eprintln!(
-                                    "[{}]: actuation failure for {:?}: {:?}",
-                                    runtime_state.twin_car.identity, other_action, err
-                                );
+                                if let Some(sink) = &runtime_state.diagnostic_sink {
+                                    let _ = sink.try_emit(diag_actuation_failure(
+                                        &runtime_state.twin_car.identity,
+                                        &format!("{:?}", other_action),
+                                        &format!("{:?}", err),
+                                    ));
+                                }
                             }
                         }
                     }
                 }
 
                 if runtime_state.twin_car.current_state != old_state {
-                    println!(
-                        "[{}]: Transitioned to {:?}",
-                        runtime_state.twin_car.identity, runtime_state.twin_car.current_state
-                    );
+                    if let Some(sink) = &runtime_state.diagnostic_sink {
+                        let _ = sink.try_emit(diag_state_transition(
+                            &runtime_state.twin_car.identity,
+                            &runtime_state.twin_car.current_state,
+                        ));
+                    }
                 }
                 let _ = mode;
                 Ok(())
@@ -201,18 +225,17 @@ impl VirtualCarActor {
         };
 
         if let Err(err) = sink.try_emit(raw) {
+            let diag_sink = &runtime_state.diagnostic_sink;
             match err {
                 TransitionSinkError::Full => {
-                    eprintln!(
-                        "[{}]: dropping transition record: sink full",
-                        runtime_state.twin_car.identity
-                    );
+                    if let Some(sink) = diag_sink {
+                        let _ = sink.try_emit(diag_transition_sink_full(&runtime_state.twin_car.identity));
+                    }
                 }
                 TransitionSinkError::Closed => {
-                    eprintln!(
-                        "[{}]: dropping transition record: sink closed",
-                        runtime_state.twin_car.identity
-                    );
+                    if let Some(sink) = diag_sink {
+                        let _ = sink.try_emit(diag_transition_sink_closed(&runtime_state.twin_car.identity));
+                    }
                 }
             }
         }

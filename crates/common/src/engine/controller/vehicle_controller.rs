@@ -26,6 +26,7 @@ pub enum VehicleControllerError {
 pub struct VehicleControllerRuntimeOptions {
     pub log_timer_tick: bool,
     pub actuation_command_tx: Option<tokio::sync::mpsc::Sender<ActuationCommand>>,
+    pub diagnostic_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::diagnostic::DiagnosticMessage>>,
 }
 
 impl Default for VehicleControllerRuntimeOptions {
@@ -33,6 +34,7 @@ impl Default for VehicleControllerRuntimeOptions {
         Self {
             log_timer_tick: false,
             actuation_command_tx: None,
+            diagnostic_tx: None,
         }
     }
 }

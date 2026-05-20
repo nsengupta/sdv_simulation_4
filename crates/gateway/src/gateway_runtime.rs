@@ -3,8 +3,8 @@
 use anyhow::Result;
 use common::{
     ACK_OFF, ACK_ON, MSG_ACK_OFF, MSG_ACK_ON, MSG_NACK_OFF, MSG_NACK_ON, NACK_OFF, NACK_ON,
-    ActuationCommand, PhysicalCarVocabulary, VehicleController, VehicleControllerRuntimeOptions,
-    VehicleEvent, VssSignal,
+    ActuationCommand, PhysicalCarVocabulary, VehicleController,
+    VehicleControllerRuntimeOptions, VehicleEvent, VssSignal, spawn_stdout_diagnostic_observer,
 };
 use socketcan::{CanSocket, Socket};
 use std::sync::{Arc, Mutex};
@@ -42,9 +42,14 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     let front_headlamp_policy = Arc::new(Mutex::new(FrontHeadlampPolicy::default()));
     let (actuation_cmd_tx, actuation_cmd_rx) = mpsc::channel(ACTUATION_COMMAND_CHANNEL_CAPACITY);
 
+    // Diagnostic channel: twin emits DiagnosticMessage, runtime observes.
+    let (diag_tx, diag_rx) = mpsc::unbounded_channel();
+    let _diag_observer = spawn_stdout_diagnostic_observer(diag_rx);
+
     let runtime_options = VehicleControllerRuntimeOptions {
         log_timer_tick: launch.print_timer_tick,
         actuation_command_tx: Some(actuation_cmd_tx),
+        diagnostic_tx: Some(diag_tx),
         ..VehicleControllerRuntimeOptions::default()
     };
 

@@ -33,7 +33,7 @@ fn given_driving_when_high_rpm_then_shim_and_strategy_transition_match() {
     let via_strategy =
         transition_map::transition(&FsmState::Driving, &FsmEvent::UpdateRpm(5600), &ctx, now);
 
-    assert_eq!(via_shim, via_strategy);
+    assert_eq!(via_shim.next_state, via_strategy.next_state);
 }
 
 #[test]
@@ -47,10 +47,10 @@ fn given_driving_when_both_extreme_thresholds_exceeded_then_enters_warning() {
     let via_strategy =
         transition_map::transition(&FsmState::Driving, &FsmEvent::UpdateRpm(5600), &ctx, now);
 
-    assert_eq!(via_shim, via_strategy);
-    assert!(matches!(via_shim, FsmState::ExtremeOperationWarning(_)));
+    assert_eq!(via_shim.next_state, via_strategy.next_state);
+    assert!(matches!(via_shim.next_state, FsmState::ExtremeOperationWarning(_)));
 
-    let actions = output(&FsmState::Driving, &via_shim, &ctx);
+    let actions = output(&FsmState::Driving, &via_shim.next_state, &ctx);
     assert!(actions.contains(&FsmAction::LogWarning(
         SPEED_THRESHOLD_WARNING_MESSAGE.to_string()
     )));

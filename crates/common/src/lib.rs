@@ -9,6 +9,7 @@ pub mod transition_sink;
 pub mod front_headlamp_log;
 pub mod vehicle_constants;
 pub mod vehicle_kinematics;
+pub mod diagnostic;
 mod virtual_car_actor;
 
 #[cfg(test)]
@@ -37,4 +38,10 @@ pub use vehicle_constants::{
 };
 pub use transition_sink::{
     RawTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError,
+};
+pub use diagnostic::{
+    DiagnosticLevel, DiagnosticMessage, DiagnosticSink, DiagnosticSinkError,
+    TokioMpscDiagnosticSink, diag_state_transition, diag_timer_tick,
+    diag_actuation_failure, diag_transition_sink_full, diag_transition_sink_closed,
+    spawn_stdout_diagnostic_observer,
 };

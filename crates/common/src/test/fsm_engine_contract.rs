@@ -36,7 +36,7 @@ fn test_transition_and_output_extreme_operation_emits_both_signals() {
     let ctx = valid_twin_context();
     let now = Instant::now();
     let driving = transition(&FsmState::Idle, &FsmEvent::UpdateRpm(1200), &ctx, now);
-    assert_eq!(driving, FsmState::Driving);
+    assert_eq!(driving.next_state, FsmState::Driving);
 
     let overspeed_ctx = ctx_with_rpm(5600);
     assert!(extreme_operation_active(
@@ -44,10 +44,10 @@ fn test_transition_and_output_extreme_operation_emits_both_signals() {
         overspeed_ctx.speed
     ));
 
-    let warning = transition(&driving, &FsmEvent::UpdateRpm(5600), &overspeed_ctx, now);
-    assert!(matches!(warning, FsmState::ExtremeOperationWarning(_)));
+    let warning = transition(&driving.next_state, &FsmEvent::UpdateRpm(5600), &overspeed_ctx, now);
+    assert!(matches!(warning.next_state, FsmState::ExtremeOperationWarning(_)));
 
-    let actions = output(&FsmState::Driving, &warning, &overspeed_ctx);
+    let actions = output(&FsmState::Driving, &warning.next_state, &overspeed_ctx);
     assert!(actions.contains(&FsmAction::StartBuzzer));
     assert!(actions.contains(&FsmAction::LogWarning(
         SPEED_THRESHOLD_WARNING_MESSAGE.to_string()
@@ -69,10 +69,10 @@ fn test_transition_high_speed_alone_emits_speed_threshold_signal_only() {
     assert!(fast_ctx.rpm <= RPM_EXTREME_OPERATION_THRESHOLD);
     assert!(!extreme_operation_active(fast_ctx.rpm, fast_ctx.speed));
 
-    let warning = transition(&driving, &FsmEvent::UpdateRpm(rpm), &fast_ctx, now);
-    assert!(matches!(warning, FsmState::ExtremeOperationWarning(_)));
+    let warning = transition(&driving.next_state, &FsmEvent::UpdateRpm(rpm), &fast_ctx, now);
+    assert!(matches!(warning.next_state, FsmState::ExtremeOperationWarning(_)));
 
-    let actions = output(&FsmState::Driving, &warning, &fast_ctx);
+    let actions = output(&FsmState::Driving, &warning.next_state, &fast_ctx);
     assert!(actions.contains(&FsmAction::LogWarning(
         SPEED_THRESHOLD_WARNING_MESSAGE.to_string()
     )));
@@ -86,29 +86,29 @@ fn test_transition_standard_commute_flow() {
     let ctx = valid_twin_context();
     let now = Instant::now();
     let mut state = transition(&FsmState::Off, &FsmEvent::PowerOn, &ctx, now);
-    assert_eq!(state, FsmState::Idle);
+    assert_eq!(state.next_state, FsmState::Idle);
 
     let driving_ctx = ctx_with_rpm(1500);
-    state = transition(&state, &FsmEvent::UpdateRpm(1500), &driving_ctx, now);
-    assert_eq!(state, FsmState::Driving);
+    state = transition(&state.next_state, &FsmEvent::UpdateRpm(1500), &driving_ctx, now);
+    assert_eq!(state.next_state, FsmState::Driving);
 
     // Stay below speed threshold (160 km/h): ~1300 RPM → ~148 km/h.
-    state = transition(&state, &FsmEvent::UpdateRpm(1300), &ctx_with_rpm(1300), now);
-    assert_eq!(state, FsmState::Driving);
+    state = transition(&state.next_state, &FsmEvent::UpdateRpm(1300), &ctx_with_rpm(1300), now);
+    assert_eq!(state.next_state, FsmState::Driving);
 
     let stopped_ctx = ctx_with_rpm(0);
-    state = transition(&state, &FsmEvent::UpdateRpm(0), &stopped_ctx, now);
-    assert_eq!(state, FsmState::Idle);
+    state = transition(&state.next_state, &FsmEvent::UpdateRpm(0), &stopped_ctx, now);
+    assert_eq!(state.next_state, FsmState::Idle);
 
-    state = transition(&state, &FsmEvent::PowerOff, &stopped_ctx, now);
-    assert_eq!(state, FsmState::Off);
+    state = transition(&state.next_state, &FsmEvent::PowerOff, &stopped_ctx, now);
+    assert_eq!(state.next_state, FsmState::Off);
 }
 
 #[test]
 fn test_transition_illegal_shutdown_attempt() {
     let ctx = ctx_with_rpm(3000);
     let state = transition(&FsmState::Driving, &FsmEvent::PowerOff, &ctx, Instant::now());
-    assert_eq!(state, FsmState::Driving);
+    assert_eq!(state.next_state, FsmState::Driving);
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_warning_recovery_requires_cooldown_and_cleared_thresholds() {
         &ctx,
         base + Duration::from_secs(2),
     );
-    assert!(matches!(early, FsmState::ExtremeOperationWarning(_)));
+    assert!(matches!(early.next_state, FsmState::ExtremeOperationWarning(_)));
 
     let still_extreme_ctx = ctx_with_rpm(6200);
     assert!(extreme_operation_active(
@@ -136,7 +136,7 @@ fn test_warning_recovery_requires_cooldown_and_cleared_thresholds() {
         &still_extreme_ctx,
         base + Duration::from_secs(6),
     );
-    assert!(matches!(still_warning, FsmState::ExtremeOperationWarning(_)));
+    assert!(matches!(still_warning.next_state, FsmState::ExtremeOperationWarning(_)));
 
     let recovered = transition(
         &warning,
@@ -144,9 +144,9 @@ fn test_warning_recovery_requires_cooldown_and_cleared_thresholds() {
         &ctx,
         base + Duration::from_secs(6),
     );
-    assert_eq!(recovered, FsmState::Driving);
+    assert_eq!(recovered.next_state, FsmState::Driving);
 
-    let actions = output(&warning, &recovered, &ctx);
+    let actions = output(&warning, &recovered.next_state, &ctx);
     assert!(actions.contains(&FsmAction::StopBuzzer));
 }
 
@@ -162,8 +162,8 @@ fn test_warning_recovers_to_idle_when_stationary() {
         &ctx,
         base + Duration::from_secs(6),
     );
-    assert_eq!(recovered, FsmState::Idle);
+    assert_eq!(recovered.next_state, FsmState::Idle);
 
-    let actions = output(&warning, &recovered, &ctx);
+    let actions = output(&warning, &recovered.next_state, &ctx);
     assert!(actions.contains(&FsmAction::StopBuzzer));
 }

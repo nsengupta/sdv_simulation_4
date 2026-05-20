@@ -16,53 +16,60 @@ use std::time::{Duration, Instant};
 /// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
 /// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
 /// - Everything else -> stay in current state
+///
+/// # Purity
+///
+/// This is a pure decision function: no I/O, no logging. If a transition (or non-transition)
+/// is noteworthy, a [`TransitionNote`] is returned so the caller can decide how to handle it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransitionNote {
+    /// A non-transition the caller may want to log as a warning.
+    RejectedPowerOff,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionResult {
+    pub next_state: FsmState,
+    /// An optional note about a noteworthy non-transition.
+    /// `None` means the outcome is routine / by design.
+    pub note: Option<TransitionNote>,
+}
+
 pub fn transition(
     current_state: &FsmState,
     event: &FsmEvent,
     current_ctx: &VehicleContext,
     now: Instant,
-) -> FsmState {
+) -> TransitionResult {
     use FsmEvent::*;
     use FsmState::*;
 
     match current_state {
         Off => match event {
-            PowerOn if current_ctx.is_healthy() => Idle,
-            PowerOff => {
-                eprintln!("[REJECTED]: PowerOff is invalid while in state {:?}", current_state);
-                Off
-            }
-            _ => Off,
+            PowerOn if current_ctx.is_healthy() => TransitionResult { next_state: Idle, note: None },
+            PowerOff => TransitionResult { next_state: Off, note: Some(TransitionNote::RejectedPowerOff) },
+            _ => TransitionResult { next_state: Off, note: None },
         },
         Idle => match event {
-            PowerOff => Off,
-            UpdateRpm(rpm) if *rpm > 1000 => Driving,
-            _ => Idle,
+            PowerOff => TransitionResult { next_state: Off, note: None },
+            UpdateRpm(rpm) if *rpm > 1000 => TransitionResult { next_state: Driving, note: None },
+            _ => TransitionResult { next_state: Idle, note: None },
         },
         Driving => match event {
-            PowerOff => {
-                eprintln!("[REJECTED]: PowerOff is invalid while in state {:?}", current_state);
-                Driving
-            }
+            PowerOff => TransitionResult { next_state: Driving, note: Some(TransitionNote::RejectedPowerOff) },
             _ if operational_warning_active(current_ctx.rpm, current_ctx.speed) => {
-                ExtremeOperationWarning(now)
+                TransitionResult { next_state: ExtremeOperationWarning(now), note: None }
             }
-            _ if current_ctx.speed == 0 => Idle,
-            _ => Driving,
+            _ if current_ctx.speed == 0 => TransitionResult { next_state: Idle, note: None },
+            _ => TransitionResult { next_state: Driving, note: None },
         },
         ExtremeOperationWarning(began_at) => match event {
             TimerTick if operational_warning_recovery_ready(*began_at, now, current_ctx) => {
-                if current_ctx.speed == 0 {
-                    Idle
-                } else {
-                    Driving
-                }
+                let next_state = if current_ctx.speed == 0 { Idle } else { Driving };
+                TransitionResult { next_state, note: None }
             }
-            PowerOff => {
-                eprintln!("[REJECTED]: PowerOff is invalid while in state {:?}", current_state);
-                ExtremeOperationWarning(*began_at)
-            }
-            _ => ExtremeOperationWarning(*began_at),
+            PowerOff => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: Some(TransitionNote::RejectedPowerOff) },
+            _ => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: None },
         },
     }
 }

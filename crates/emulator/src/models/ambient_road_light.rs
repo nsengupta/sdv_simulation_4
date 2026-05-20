@@ -23,9 +23,9 @@ impl AmbientRoadLightModel {
     pub fn next_ambient_lux(&mut self, _epoch_secs: u64) -> u16 {
         let mut rng = rand::rng();
 
-        if self.tunnel_ticks_remaining == 0 {
-            let tunnel_event = rng.random_bool(self.cfg.tunnel_event_probability_per_tick as f64);
-            if tunnel_event {
+        if !self.in_tunnel() {
+            let is_about_to_enter_a_tunnel = rng.random_bool(self.cfg.tunnel_event_probability_per_tick as f64);
+            if is_about_to_enter_a_tunnel {
                 self.tunnel_ticks_remaining = rng
                     .random_range(self.cfg.tunnel_duration_ticks_min..=self.cfg.tunnel_duration_ticks_max);
             }
@@ -36,7 +36,7 @@ impl AmbientRoadLightModel {
         );
         let mut lux = self.cfg.baseline_daylight_lux as i32 + jitter;
 
-        if self.tunnel_ticks_remaining > 0 {
+        if self.in_tunnel() {
             lux -= self.cfg.tunnel_lux_drop as i32;
             self.tunnel_ticks_remaining = self.tunnel_ticks_remaining.saturating_sub(1);
         }

@@ -95,7 +95,7 @@ proptest! {
 
         // INVARIANT: You can NEVER go from Off directly to Driving
         prop_assert_ne!(
-            next_state,
+            next_state.next_state,
             FsmState::Driving,
             "Illegal transition detected: Off -> Driving directly via {:?}",
             event
@@ -112,10 +112,10 @@ proptest! {
         let before = state.clone();
         let next = transition(&state, &FsmEvent::PowerOff, &ctx, Instant::now());
         if before == FsmState::Idle {
-            prop_assert_eq!(next, FsmState::Off);
+            prop_assert_eq!(next.next_state, FsmState::Off);
         } else {
             prop_assert_eq!(
-                next,
+                next.next_state,
                 before,
                 "PowerOff outside Idle is invalid; state must be unchanged"
             );
@@ -139,6 +139,6 @@ proptest! {
         let next = transition(&state, &event, &ctx, Instant::now());
 
         // INVARIANT: In these states, PowerOff MUST be ignored.
-        prop_assert_eq!(next, state, "Car allowed shutdown from a moving state!");
+        prop_assert_eq!(next.next_state, state, "Car allowed shutdown from a moving state!");
     }
 }
