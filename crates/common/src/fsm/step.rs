@@ -25,7 +25,7 @@ use crate::engine::op_strategy::transition_map::{output, transition, TransitionN
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct TransitionRecord {
+pub struct RawTransitionRecord {
     pub at: Instant,
     pub event: FsmEvent,
     pub old_state: FsmState,
@@ -39,7 +39,7 @@ pub struct StepResult {
     pub next_state: FsmState,
     pub modified_ctx: VehicleContext,
     pub actions: Vec<DomainAction>,
-    pub transition_record: TransitionRecord,
+    pub transition_record: RawTransitionRecord,
 }
 
 pub fn step(
@@ -117,7 +117,7 @@ pub fn step(
         next_state: next_state.clone(),
         modified_ctx: modified_ctx.clone(),
         actions,
-        transition_record: TransitionRecord {
+        transition_record: RawTransitionRecord {
             at: now,
             event: event.clone(),
             old_state: current_state.clone(),

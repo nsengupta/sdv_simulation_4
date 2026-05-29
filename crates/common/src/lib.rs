@@ -37,7 +37,8 @@ pub use vehicle_constants::{
     SPEED_EXTREME_OPERATION_THRESHOLD_KPH, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
 pub use transition_sink::{
-    RawTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError,
+    PublishedTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink,
+    TransitionSinkError,
 };
 pub use diagnostic::{
     DiagnosticLevel, DiagnosticMessage, DiagnosticSink, DiagnosticSinkError,

@@ -17,7 +17,7 @@ use crate::engine::controller::actuation_manager::{
 };
 use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{self, ActorModeHintFromDomain, DomainAction, FsmEvent, FsmState, VehicleContext};
-use crate::transition_sink::{RawTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
+use crate::transition_sink::{PublishedTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
 
 /// The Digital Twin Actor
 pub struct VirtualCarActor;
@@ -209,7 +209,7 @@ impl Actor for VirtualCarActor {
 impl VirtualCarActor {
     fn try_emit_transition_record(
         runtime_state: &mut VirtualCarRuntimeState,
-        transition_record: fsm::TransitionRecord,
+        transition_record: fsm::RawTransitionRecord,
     ) {
         let Some(sink) = &runtime_state.transition_sink else {
             return;
@@ -218,7 +218,7 @@ impl VirtualCarActor {
         let sequence_no = runtime_state.next_sequence_no;
         runtime_state.next_sequence_no = runtime_state.next_sequence_no.saturating_add(1);
 
-        let raw = RawTransitionRecord {
+        let raw = PublishedTransitionRecord {
             car_identity: runtime_state.twin_car.identity.clone(),
             sequence_no,
             transition: transition_record,

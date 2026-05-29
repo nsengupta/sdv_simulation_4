@@ -2,7 +2,7 @@ use crate::digital_twin::{DigitalTwinCar, DigitalTwinCarVocabulary};
 use crate::engine::controller::actuation_contract::ActuationCommand;
 use crate::engine::connectors::{PhysicalToDigitalProjector, Projector};
 use crate::fsm::FsmEvent;
-use crate::transition_sink::RawTransitionRecord;
+use crate::transition_sink::PublishedTransitionRecord;
 use crate::PhysicalCarVocabulary;
 use ractor::rpc::CallResult;
 use ractor::{ActorRef, MessagingErr, SpawnErr};
@@ -28,7 +28,7 @@ pub struct VehicleControllerRuntimeOptions {
     pub log_timer_tick: bool,
     pub actuation_command_tx: Option<tokio::sync::mpsc::Sender<ActuationCommand>>,
     pub diagnostic_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::diagnostic::DiagnosticMessage>>,
-    pub transition_tx: Option<tokio::sync::mpsc::Sender<RawTransitionRecord>>,
+    pub transition_tx: Option<tokio::sync::mpsc::Sender<PublishedTransitionRecord>>,
 }
 
 impl Default for VehicleControllerRuntimeOptions {

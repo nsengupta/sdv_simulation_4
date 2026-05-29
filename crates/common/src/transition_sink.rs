@@ -4,14 +4,14 @@
 //! formatting, enrichment, persistence, or transport mapping must happen in sink
 //! implementations / receivers, not in the actor.
 
-use crate::fsm::TransitionRecord;
+use crate::fsm::RawTransitionRecord;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawTransitionRecord {
+pub struct PublishedTransitionRecord {
     pub car_identity: String,
     pub sequence_no: u64,
-    pub transition: TransitionRecord,
+    pub transition: RawTransitionRecord,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,22 +21,22 @@ pub enum TransitionSinkError {
 }
 
 pub trait TransitionRecordSink: Send + Sync {
-    fn try_emit(&self, record: RawTransitionRecord) -> Result<(), TransitionSinkError>;
+    fn try_emit(&self, record: PublishedTransitionRecord) -> Result<(), TransitionSinkError>;
 }
 
 #[derive(Clone)]
 pub struct TokioMpscTransitionRecordSink {
-    tx: mpsc::Sender<RawTransitionRecord>,
+    tx: mpsc::Sender<PublishedTransitionRecord>,
 }
 
 impl TokioMpscTransitionRecordSink {
-    pub fn new(tx: mpsc::Sender<RawTransitionRecord>) -> Self {
+    pub fn new(tx: mpsc::Sender<PublishedTransitionRecord>) -> Self {
         Self { tx }
     }
 }
 
 impl TransitionRecordSink for TokioMpscTransitionRecordSink {
-    fn try_emit(&self, record: RawTransitionRecord) -> Result<(), TransitionSinkError> {
+    fn try_emit(&self, record: PublishedTransitionRecord) -> Result<(), TransitionSinkError> {
         match self.tx.try_send(record) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Err(TransitionSinkError::Full),

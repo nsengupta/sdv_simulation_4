@@ -49,9 +49,9 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     let (diag_tx, diag_rx) = mpsc::unbounded_channel();
     let _diag_observer = spawn_stdout_diagnostic_observer(diag_rx);
 
-    // Transition channel: twin emits RawTransitionRecord, optionally printed to stdout.
+    // Transition channel: twin emits PublishedTransitionRecord, optionally printed to stdout.
     let transition_tx = if launch.print_transitions {
-        let (tx, mut rx) = mpsc::channel::<common::RawTransitionRecord>(256);
+        let (tx, mut rx) = mpsc::channel::<common::PublishedTransitionRecord>(256);
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
                 println!(

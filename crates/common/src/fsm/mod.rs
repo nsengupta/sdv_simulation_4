@@ -12,4 +12,4 @@ pub use machineries::{
     ActorModeHintFromDomain, DomainAction, FrontHeadlampIncompleteCause,
     FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState, LightingState,
 };
-pub use step::{step, StepResult, TransitionRecord};
+pub use step::{step, StepResult, RawTransitionRecord};
