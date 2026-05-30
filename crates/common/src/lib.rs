@@ -5,6 +5,7 @@ pub mod engine;
 pub mod fsm;
 pub mod digital_twin;
 pub mod signals;
+pub mod published;
 pub mod transition_sink;
 pub mod front_headlamp_log;
 pub mod vehicle_constants;
@@ -39,9 +40,15 @@ pub use vehicle_constants::{
     EXTREME_OPERATION_WARNING_MESSAGE, RPM_EXTREME_OPERATION_THRESHOLD,
     SPEED_EXTREME_OPERATION_THRESHOLD_KPH, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
+pub use published::{
+    PublishedDomainAction, PublishedFrontHeadlampIncompleteCause,
+    PublishedFrontHeadlampSwitchDirection, PublishedFsmEvent, PublishedFsmState,
+    PublishedHeadlampContext, PublishedHealthContext, PublishedLightingState,
+    PublishedPowertrainContext, PublishedTransitionRecord, PublishedVehicleContext,
+    PublishedVisibilityContext, PublishedWheelRpm, SessionEpoch,
+};
 pub use transition_sink::{
-    PublishedTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink,
-    TransitionSinkError,
+    TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError,
 };
 pub use diagnostic::{
     DiagnosticLevel, DiagnosticMessage, DiagnosticSink, DiagnosticSinkError,

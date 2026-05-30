@@ -17,7 +17,8 @@ use crate::engine::controller::actuation_manager::{
 };
 use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{self, ActorModeHintFromDomain, DomainAction, FsmEvent, FsmState, VehicleContext};
-use crate::transition_sink::{PublishedTransitionRecord, TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
+use crate::published::{PublishedTransitionRecord, SessionEpoch};
+use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
 
 /// The Digital Twin Actor
 pub struct VirtualCarActor;
@@ -46,6 +47,9 @@ impl From<&str> for VirtualCarActorArgs {
 pub struct VirtualCarRuntimeState {
     twin_car: DigitalTwinCar,
     next_record_seq: u64,
+    /// Monotonic↔wall anchor for this run; the sole source of wall-clock stamps on published
+    /// records and of the actuation `session_id`.
+    session_epoch: SessionEpoch,
     runtime_options: VehicleControllerRuntimeOptions,
     actuation_manager: Arc<dyn ActuationManager>,
     diagnostic_sink: Option<Arc<dyn DiagnosticSink>>,
@@ -106,12 +110,13 @@ impl Actor for VirtualCarActor {
             ));
         }
 
+        // One wall-clock read per run: this anchor stamps published records *and* seeds the
+        // actuation session id, so both share a single, consistent epoch.
+        let session_epoch = SessionEpoch::capture();
+
         let actuation_manager: Arc<dyn ActuationManager> =
             if let Some(tx) = args.runtime_options.actuation_command_tx.clone() {
-                let session_id = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0);
+                let session_id = session_epoch.session_id_nanos() as u64;
                 let manager = DefaultActuationManager::with_command_channel(
                     identity.clone(),
                     session_id,
@@ -126,6 +131,7 @@ impl Actor for VirtualCarActor {
         Ok(VirtualCarRuntimeState {
             twin_car: DigitalTwinCar::new(identity, FsmState::Off, VehicleContext::default())?,
             next_record_seq: 1,
+            session_epoch,
             runtime_options: args.runtime_options,
             actuation_manager,
             diagnostic_sink,
@@ -224,13 +230,15 @@ impl VirtualCarActor {
         let record_seq = runtime_state.next_record_seq;
         runtime_state.next_record_seq = runtime_state.next_record_seq.saturating_add(1);
 
-        let raw = PublishedTransitionRecord {
-            car_identity: runtime_state.twin_car.identity().to_owned(),
+        // Project the pure (Instant-bearing) record into its serializable, wall-stamped form.
+        let published = PublishedTransitionRecord::project(
+            &transition_record,
+            runtime_state.twin_car.identity(),
             record_seq,
-            transition: transition_record,
-        };
+            &runtime_state.session_epoch,
+        );
 
-        if let Err(err) = sink.try_emit(raw) {
+        if let Err(err) = sink.try_emit(published) {
             let diag_sink = &runtime_state.diagnostic_sink;
             match err {
                 TransitionSinkError::Full => {

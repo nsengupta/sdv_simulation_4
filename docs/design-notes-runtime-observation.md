@@ -380,8 +380,9 @@ work-item = one focused commit, subject prefixed with the ID (e.g.
 |----|-------|-----------|--------|------------|
 | WI-1 | Record emitted actions in `RawTransitionRecord` | Q4, Q5, Q9 | **DONE** | WI-7a |
 | WI-2 | Public pure state-law checker + journey fold | Q6 | **DONE** | WI-1 |
-| WI-3 | `Clock` seam in runtime options | Q7, Q8 | pending | — |
-| WI-4 | `as_of_seq` snapshot stamp + Counter-A session/epoch | Q3, Q7 | pending | WI-7b |
+| WI-3 | `Clock` seam in runtime options | Q7, Q8 | **deferred → actorification** (co-design with ticker actor; pure core already time-as-input) | — |
+| WI-4 | `as_of_seq` snapshot stamp + Counter-A session/epoch | Q3, Q7 | session/epoch **DONE** (via WI-12 `SessionEpoch`); `as_of_seq` snapshot stamp still pending | WI-7b |
+| WI-12 | Serializable published record (`Instant` inside → `Duration`-since-`UNIX_EPOCH` for the world) | Q7 | **DONE** | WI-7b |
 | WI-5 | Reclassify `LogWarning` toward diagnostic sink | Q5 | **DONE** | — |
 | WI-6 | Test helper `(controller, actuation_rx)` + ack-injection | Q2 | **DONE** | — |
 | WI-7a | Type renames `TransitionRecord`→`RawTransitionRecord`, old `RawTransitionRecord`→`PublishedTransitionRecord` | Q4, Q7 | **DONE (uncommitted)** | — |
@@ -549,6 +550,61 @@ Files:
 
 Acceptance met: `cargo test -p common --lib` green (78); no new clippy warnings.
 
+### WI-12 scope (DONE — `Instant` inside, `Duration` for the world)
+
+The published transition record is now **serializable, portable, and offline-foldable**, while the
+functional core keeps measuring time with `std::time::Instant`. Resolves the blocker that
+`std::time::Instant` has no serde impl and no defined zero, so a "dumb writer → file → offline
+verifier" pipeline was impossible with the old record shape.
+
+Decision trail (the "why"):
+- **Two clocks for two jobs.** Monotonic `Instant` *measures* elapsed time (timeout/cooldown
+  decisions — safe against wall-clock jumps); wall-clock `Duration`-since-`UNIX_EPOCH` *places*
+  records for serialization/folding. The bridge is a one-shot `(t0_instant, t0_unix)` correlation
+  captured per run.
+- **Project at the published boundary, never in the core.** The pure `FsmState`,
+  `VehicleContext`, and `RawTransitionRecord` stay `Instant`-bearing and serde-free. A new
+  `published` module owns the **full lossless mirror** (every type, time fields → `Duration`) plus
+  all serde. This reuses the WI-7a raw/published split: `PublishedTransitionRecord` *is* the
+  projected form.
+- **Three `Instant` sites projected:** `RawTransitionRecord.at`,
+  `FsmState::ExtremeOperationWarning(Instant)` (in `old_state`/`next_state`), and
+  `HeadlampContext.ack_pending_since` (in `old_ctx`/`current_ctx`). `DomainAction`/`FsmEvent` carry
+  no `Instant` but are mirrored anyway (decision: full decoupling of the wire contract; pure core
+  stays serde-free). `EnterMode` is dropped from `PublishedDomainAction` — it is a runtime control
+  hint, not a domain intent (consistent with WI-1).
+- **Foldability triple, now complete:** `record_seq` (clock-independent order) + `at_unix`
+  (`Duration` since `UNIX_EPOCH`, for elapsed-between-transitions) + `session_epoch_unix_nanos`
+  (which run). An external tool can derive a flat `u128`-nanos timeline from `Duration` itself, so
+  `Duration` is serialized with default serde (no premature flattening).
+- **Session epoch unified.** `SessionEpoch::capture()` reads the wall clock **once** per run and
+  now seeds *both* the published stamps and the actuation `session_id` (previously a separate
+  `SystemTime::now()` read in `pre_start`). Lives in `VirtualCarRuntimeState`, never in the twin
+  (the twin stays a clean correct-by-construction value).
+- **WI-3 (clock seam) explicitly deferred.** The pure core is already time-as-input, so timeout
+  logic is already deterministically testable at the pure layer. The clock seam's marginal value is
+  actor-level test determinism; it is identical now vs post-actorification and is best co-designed
+  with the future ticker/timer child actor. Revisit during actorification.
+
+Files:
+- `published.rs` (new) — `SessionEpoch` + the full serializable mirror (`PublishedFsmState`,
+  `PublishedVehicleContext` and sub-contexts, `PublishedFsmEvent`, `PublishedDomainAction`, …) and
+  `PublishedTransitionRecord::project(raw, identity, seq, epoch)`.
+- `transition_sink.rs` — `PublishedTransitionRecord` now re-exported from `published` (was the
+  raw-wrapping struct); sink trait/impls unchanged.
+- `engine/controller/virtual_car_actor.rs` — `VirtualCarRuntimeState` holds `SessionEpoch`;
+  `try_emit_transition_record` projects before emit; `session_id` derives from the same epoch.
+- `lib.rs` — declare + export the `published` module.
+- `engine/controller/vehicle_controller.rs` — `transition_tx` carries the projected record (via the
+  re-export; no change at the use site).
+- `test/actor_contract.rs` — assertions move to published types (`PublishedFsmEvent`/`State`) and
+  add session-epoch + `at_unix` monotonicity checks.
+- `gateway/src/gateway_runtime.rs` — transition print uses the flat published fields.
+
+Acceptance met: `cargo test --workspace` green (78 common + gateway/bus e2e); `published.rs`
+clippy-clean. Not in this slice (deliberately): the file writer, the offline reader/verifier, and
+the `as_of_seq` snapshot stamp (the rest of WI-4).
+
 ### WI-7b scope (DONE, agreed a1)
 
 Renamed **only** the ledger field; `CorrelationId` and all `vehicle_device_bus`
@@ -626,8 +682,9 @@ Compact, single-glance digest pulled from the Q&A and work-item scopes above. Th
 | WI-7b | Ledger field `sequence_no`→`record_seq` | **DONE** | Disambiguate the **ledger** counter (Counter A) from the **command** counter (`CorrelationId`, Counter B) — naming is the contract. |
 | WI-1 | Record emitted actions in `RawTransitionRecord` | **DONE** | The ledger now shows *what the FSM decided to do* (intended intents), making no-op actions observable and feeding journey/causality work. |
 | WI-2 | Public pure state-law primitive (`verify_state_laws` + catalog) | **DONE** | Invariants are a pure, named-law *oracle*; an external/offline verifier folds it over a captured stream. No journey helper in the lib (dropped as over-engineering). |
-| WI-3 | `Clock` seam in runtime options | pending | Make the lone `Instant::now()` injectable → deterministic ACK-timeout / 5 s-cooldown tests without `sleep`. |
-| WI-4 | `as_of_seq` snapshot stamp + Counter-A session/epoch | pending | Make snapshot staleness explicit & reconcilable; stop `record_seq` reuse across restarts. |
+| WI-3 | `Clock` seam in runtime options | **deferred → actorification** | Pure core is already time-as-input (deterministic at the pure layer). Seam's marginal value is actor-level test determinism; identical now vs post-split, so co-design it with the future ticker actor. |
+| WI-4 | `as_of_seq` snapshot stamp + Counter-A session/epoch | session/epoch **DONE** (WI-12); `as_of_seq` pending | `SessionEpoch` now anchors every run (one wall-clock read, shared by published stamps + actuation `session_id`); `as_of_seq` snapshot legibility still to come. |
+| WI-12 | Serializable published record (`Instant`→`Duration`-since-`UNIX_EPOCH`) | **DONE** | Monotonic `Instant` *measures* inside; wall-clock `Duration` *places* for the world. New `published` module owns the full lossless mirror + serde; core stays `Instant`-bearing & serde-free. Unblocks file-dump + offline folding. |
 | WI-5 | Reclassify `LogWarning` toward the diagnostic sink | **DONE** | `LogWarning` is observability, not actuation — the actor now routes it to the diagnostic bus instead of the actuation no-op. |
 | WI-6 | Test helper `(controller, actuation_rx)` + ack-injection | **DONE** | `#[cfg(test)]` helpers in `test/mod.rs` reusing `ActorGuard`; ack/nack injected via the real `submit_physical_car_event` ingress path. |
 | WI-8..11 | Ledger actor / correlation DAG / diagnostics-as-projection / actuation child I/O | actorification | Shapes that only crystallize once the monolithic actor splits into parent + child actors. |

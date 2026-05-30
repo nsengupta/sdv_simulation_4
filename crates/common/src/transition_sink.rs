@@ -1,18 +1,12 @@
 //! Transition-log sink abstraction.
 //!
-//! Actor runtime emits raw transition records through this interface. Any
-//! formatting, enrichment, persistence, or transport mapping must happen in sink
-//! implementations / receivers, not in the actor.
+//! The actor projects each pure [`RawTransitionRecord`](crate::fsm::RawTransitionRecord) into a
+//! serializable, `Instant`-free [`PublishedTransitionRecord`] (see [`crate::published`]) and emits
+//! it through this interface. Any further formatting, enrichment, persistence, or transport
+//! mapping happens in sink implementations / receivers, not in the actor.
 
-use crate::fsm::RawTransitionRecord;
+pub use crate::published::PublishedTransitionRecord;
 use tokio::sync::mpsc;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PublishedTransitionRecord {
-    pub car_identity: String,
-    pub record_seq: u64,
-    pub transition: RawTransitionRecord,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionSinkError {

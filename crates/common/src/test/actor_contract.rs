@@ -2,7 +2,8 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
-use crate::fsm::{FsmEvent, FsmState, LightingState};
+use crate::fsm::{FsmEvent, LightingState};
+use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{
     expect_actuation_command, inject_matching_ack, inject_matching_nack, install_with_actuation,
     ActorGuard,
@@ -46,16 +47,20 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
     let second = rx.recv().await.expect("Missing second transition record");
 
     assert_eq!(first.record_seq, 1);
-    assert_eq!(first.transition.event, FsmEvent::PowerOn);
-    assert_eq!(first.transition.old_state, FsmState::Off);
-    assert_eq!(first.transition.next_state, FsmState::Idle);
-    assert_eq!(first.transition.current_ctx.powertrain.wheel_rpm.front_left, 0);
+    assert_eq!(first.event, PublishedFsmEvent::PowerOn);
+    assert_eq!(first.old_state, PublishedFsmState::Off);
+    assert_eq!(first.next_state, PublishedFsmState::Idle);
+    assert_eq!(first.current_ctx.powertrain.wheel_rpm.front_left, 0);
 
     assert_eq!(second.record_seq, 2);
-    assert_eq!(second.transition.event, FsmEvent::UpdateRpm(1500));
-    assert_eq!(second.transition.old_state, FsmState::Idle);
-    assert_eq!(second.transition.next_state, FsmState::Driving);
-    assert_eq!(second.transition.current_ctx.powertrain.wheel_rpm.front_left, 1500);
+    assert_eq!(second.event, PublishedFsmEvent::UpdateRpm(1500));
+    assert_eq!(second.old_state, PublishedFsmState::Idle);
+    assert_eq!(second.next_state, PublishedFsmState::Driving);
+    assert_eq!(second.current_ctx.powertrain.wheel_rpm.front_left, 1500);
+
+    // Both records share one run (session epoch) and advance monotonically in wall time.
+    assert_eq!(first.session_epoch_unix_nanos, second.session_epoch_unix_nanos);
+    assert!(second.at_unix >= first.at_unix);
 
     let twin_snapshot = actor_ref
         .call(
@@ -66,10 +71,16 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         .expect("Failed to enqueue GetStatus")
         .expect("Actor failed to respond or timed out during GetStatus request");
 
+    // The published context mirrors the persisted actor context on its observable fields
+    // (the projection only swaps Instant anchors for wall-clock Durations).
+    let ctx = twin_snapshot.context();
     assert_eq!(
-        &second.transition.current_ctx, twin_snapshot.context(),
+        second.current_ctx.powertrain.wheel_rpm.front_left,
+        ctx.powertrain.wheel_rpm.front_left,
         "emitted current_ctx must match persisted actor context after transition"
     );
+    assert_eq!(second.current_ctx.powertrain.speed_kph, ctx.powertrain.speed_kph);
+    assert_eq!(second.current_ctx.visibility.ambient_lux, ctx.visibility.ambient_lux);
 }
 
 #[tokio::test]

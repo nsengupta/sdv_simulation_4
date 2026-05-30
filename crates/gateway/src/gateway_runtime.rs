@@ -55,8 +55,14 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
                 println!(
-                    "[transition] car={} seq={} {:?}",
-                    record.car_identity, record.record_seq, record.transition
+                    "[transition] car={} seq={} at_unix={:?} {:?} {:?} -> {:?} actions={:?}",
+                    record.car_identity,
+                    record.record_seq,
+                    record.at_unix,
+                    record.event,
+                    record.old_state,
+                    record.next_state,
+                    record.actions,
                 );
             }
         });
