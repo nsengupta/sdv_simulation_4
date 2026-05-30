@@ -18,6 +18,41 @@ Anchors in the code at time of writing:
 
 ---
 
+## ⏯️ ITERATION HANDOFF — read this first when resuming
+
+**As of 2026-05-30 (branch `refactor/assemblies`).** This is the authoritative "where we are /
+what's next" snapshot; the full ledger is further below. Rule of record: **anything tagged
+*actorification* moves to a fresh cloned project — do NOT do it in this repo.**
+
+### Done & committed in this repo
+WI-1, WI-2, WI-5, WI-6, WI-7a, WI-7b, and **WI-12** (serializable published record — also
+delivered the Counter-A **session/epoch** half of WI-4 via `SessionEpoch`). Plus two
+non-WI niceties: `EMULATOR_TUNNEL_PROB` env knob and richer state-transition diagnostics
+(decision #8). Commit trail: `WI-1` → `WI-7a/b` … → `WI-2/5/6` → `WI-12` → emulator →
+diagnostics.
+
+### ▶️ Remaining IN THIS REPO (not actorification) — exactly one
+- **WI-4 → `as_of_seq` snapshot stamp.** Stamp the `GetStatus` reply with the ledger
+  `record_seq` it reflects, so snapshot staleness is legible / reconcilable against the
+  `transition_tx` stream. Doable in the current monolithic actor (no actorification). The
+  session/epoch half of WI-4 is already DONE (WI-12 `SessionEpoch`). **This is the next task.**
+
+### Optional, also fine in this repo (non-WI, unblocked by WI-12)
+- **Ledger file writer** — a `TransitionRecordSink` that serializes `PublishedTransitionRecord`
+  to a file (serde is already derived).
+- **Offline verifier/folder** — reads that file and folds `verify_state_laws` over the
+  reconstructed cuts (order by `record_seq`, elapse by `at_unix`).
+
+### ⛔ Deferred to the actorification CLONE (do NOT do here)
+- **WI-3** — `Clock` seam (jointly deferred; co-design with the ticker/timer child actor).
+- **WI-8** — single-writer ledger actor owns `record_seq`.
+- **WI-9** — correlation IDs end-to-end (action → command → feedback → record).
+- **WI-10** — state-transition diagnostics as a projection of the ledger (lands decision #8's
+  structured `SafetyClass` seam).
+- **WI-11** — move buzzer/egress I/O into an actuation child actor.
+
+---
+
 ## Q1 — Do `transition_tx` and `diagnostic_tx` really need to be separate?
 
 **Verdict: keep them separate, but they are not peers.** One is a *fact ledger*, the
