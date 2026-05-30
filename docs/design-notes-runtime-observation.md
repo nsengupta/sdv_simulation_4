@@ -718,6 +718,33 @@ Compact, single-glance digest pulled from the Q&A and work-item scopes above. Th
 7. **Child actors never mutate parent state.** The parent's pure `step` stays the sole state
    mutator; children only feed results back as new events (async self-messages are fine;
    synchronous in-handler re-entrancy is not). This rule survives actorification.
+8. **Enrich diagnostics at the producer; the channel payload stays domain-free ("good
+   coupling").** `diag_state_transition(identity, state, ctx)` builds an enriched, human line
+   (e.g. *"Transitioned to Driving, speed = 72 km/h, RPM = 3200 (within safe limit)"*) by reusing
+   the **same** FSM predicates/threshold (`speed_threshold_exceeded`,
+   `extreme_operation_active`, `SPEED_EXTREME_OPERATION_THRESHOLD_KPH`) the FSM uses to decide
+   warnings — so the wording can never silently drift from the rule. This introduces a
+   *compile-time* dependency `diagnostic → fsm + vehicle_constants`, and that is **deliberate and
+   benign**:
+   - It couples only to **pure, runtime-free domain code** (value types + a `const` + `#[inline]`
+     pure fns) — no `ractor`/`tokio`/actor types — and there is no dependency cycle. Coupling to
+     the pure core survives actorification; coupling to *runtime* types would not (we have none).
+   - The coupling lives at the **producer**, which already owns `ctx`. What crosses
+     `diagnostic_tx` is a plain `DiagnosticMessage { level, source, message: String, timestamp }`
+     — **zero domain types**. So handing the **sink / observer / TUI / logging thread** to
+     another actor/thread/process is free; no coupling follows the consumer.
+   - The alternative (hardcoding `160` and a bespoke "safe/unsafe" rule inside the diagnostic
+     string) is *worse* — it duplicates the threshold and drifts. Single source of truth wins.
+
+   **Cleaner seam (deferred, pairs with WI-10).** If a dedicated *presentation* actor later wants
+   to do its own rendering, don't ship a pre-baked string: emit a **structured** diagnostic and
+   **pre-classify** safety at the producer — e.g. `SafetyClass { WithinLimit, OverSpeed, Extreme }`
+   alongside `{ state, speed_kph, rpm }`. The producer (which has `ctx` + thresholds) computes the
+   class; the presentation actor formats by matching the **enum only**, needing neither
+   `vehicle_constants` nor `VehicleContext`. That contains the threshold coupling at the producer
+   *and* keeps the presentation layer domain-free — best-of-both, at the cost of putting light
+   structured data (not a string) on the channel. Adopt when an actual presentation actor
+   materializes; the producer-side string is the right default until then.
 
 ### Open TODOs (carried forward)
 

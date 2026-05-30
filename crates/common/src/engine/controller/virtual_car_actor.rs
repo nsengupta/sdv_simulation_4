@@ -207,6 +207,7 @@ impl Actor for VirtualCarActor {
                         let _ = sink.try_emit(diag_state_transition(
                             runtime_state.twin_car.identity(),
                             runtime_state.twin_car.current_state(),
+                            runtime_state.twin_car.context(),
                         ));
                     }
                 }

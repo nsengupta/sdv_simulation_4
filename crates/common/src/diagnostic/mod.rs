@@ -3,7 +3,10 @@
 //! The twin emits [`DiagnosticMessage`] values through an injected channel.
 //! The runtime decides who reads the RX side and how to display them.
 
-use crate::fsm::{FsmState};
+use crate::fsm::{FsmState, VehicleContext};
+use crate::vehicle_constants::{
+    extreme_operation_active, speed_threshold_exceeded, SPEED_EXTREME_OPERATION_THRESHOLD_KPH,
+};
 
 /// Severity classification for diagnostic messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,8 +119,48 @@ impl DiagnosticSink for TokioMpscDiagnosticSink {
 
 // --- Domain-specific helpers (for cleaner call sites) ---
 
-pub fn diag_state_transition(identity: &str, new_state: &FsmState) -> DiagnosticMessage {
-    DiagnosticMessage::info("VirtualCarActor", format!("[{identity}]: Transitioned to {new_state:?}"))
+/// Human-readable transition line enriched with the post-transition powertrain context
+/// (speed / RPM) and a plain-language safety qualifier — meant for the diagnostic stream's
+/// operator audience, kept to a single compact line.
+pub fn diag_state_transition(
+    identity: &str,
+    new_state: &FsmState,
+    ctx: &VehicleContext,
+) -> DiagnosticMessage {
+    let speed = ctx.powertrain.speed_kph;
+    let rpm = ctx.powertrain.primary_rpm();
+
+    let (label, detail) = match new_state {
+        FsmState::Off => ("Off", String::new()),
+        FsmState::Idle => ("Idle", format!(", speed = {speed} km/h, RPM = {rpm}")),
+        FsmState::Driving => {
+            let safety = if speed_threshold_exceeded(speed) {
+                format!("over the {SPEED_EXTREME_OPERATION_THRESHOLD_KPH} km/h limit")
+            } else {
+                "within safe limit".to_string()
+            };
+            (
+                "Driving",
+                format!(", speed = {speed} km/h, RPM = {rpm} ({safety})"),
+            )
+        }
+        FsmState::ExtremeOperationWarning(_) => {
+            let cause = if extreme_operation_active(rpm, speed) {
+                "speed & RPM both extreme"
+            } else {
+                "speed over limit"
+            };
+            (
+                "ExtremeOperationWarning",
+                format!(", speed = {speed} km/h, RPM = {rpm} (EXCEEDS safe limit — {cause})"),
+            )
+        }
+    };
+
+    DiagnosticMessage::info(
+        "VirtualCarActor",
+        format!("[{identity}]: Transitioned to {label}{detail}"),
+    )
 }
 
 pub fn diag_timer_tick(identity: &str) -> DiagnosticMessage {
