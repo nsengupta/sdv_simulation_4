@@ -101,6 +101,130 @@ logic bug), but it surfaced real design gaps. Status updated as work landed:
 
 ---
 
+## Note — `VehicleSpeed` (`0x101`) is dropped in two places (deliberate)
+
+`VssSignal::VehicleSpeed` (wire ID `0x101`) is a **reserved slot for a future observed-speed
+ECU**; the twin derives speed from `EngineRpm` today (kinematic estimate vs ECU measurement
+stay explicit). It is currently rejected in **two** places, which is intentional:
+
+- **Gateway CAN reader** (`gateway_runtime.rs`) decodes the frame then `continue`s past it —
+  this covers the live CAN path so a speed frame never reaches the projector.
+- **Projector** (`physical_to_digital.rs`) *also* returns `ProjectionError::InvalidPayload` for
+  it — **defense-in-depth** for any non-CAN ingress (contract tests, or code constructing
+  `PhysicalCarVocabulary` directly), pinned by `test/projection_contract.rs`.
+
+So the redundancy is not an oversight: the reader skip is the wire-path optimization, the
+projector rejection is the type-level guardrail that keeps "observed speed must not silently
+reach the twin" true regardless of ingress source. If a single source of truth is later
+preferred, drop the reader skip and let everything reject at the projector. Enabling observed
+speed is then a projector + fusion change, not a wire-format change.
+
+---
+
+## Handling hysteresis
+
+The twin guards two different boundaries against *flapping* (rapid, noisy in/out
+oscillation). They use **two different mechanisms**, deliberately, because the two signals
+have different natures. Both mechanisms live **inside the twin's pure FSM**; the emulator
+only produces raw telemetry and plays no part in either guard.
+
+### Two kinds of anti-flap, side by side
+
+| | **Lux → headlamp** | **Speed → `ExtremeOperationWarning`** |
+|---|---|---|
+| Mechanism | **value deadband** (dual threshold) | **temporal latch** (minimum-dwell cooldown) |
+| Why this kind | lux is a *measured* signal that genuinely jitters around the boundary | speed is *derived* from RPM; the warning is a safety state we don't want to leave prematurely |
+| Enter | `lux ≤ LUX_ON` (840) while `Off` → request ON | `speed > 160 km/h` while `Driving` → `ExtremeOperationWarning(now)` |
+| Exit | `lux ≥ LUX_OFF` (860) while `On` → request OFF | `elapsed ≥ 5 s` **AND** hazard cleared (`speed ≤ 160`), checked on `TimerTick` |
+| Hold zone | `840 < lux < 860` → keep current state | n/a (single threshold; the time floor does the anti-flap) |
+| Owner | `HeadlampContext::evaluate_lux` (`fsm/assembly/front_headlamp.rs`) | `transition` + `operational_warning_recovery_ready` (`engine/op_strategy/transition_map.rs`) |
+
+### Lux: a classic value deadband
+
+`HeadlampContext::evaluate_lux` requests ON at `lux ≤ 840` and OFF at `lux ≥ 860`, keyed on
+the **current** lighting state. The 20-lux band `(840, 860)` is a dead zone where the lamp
+holds whatever state it is in, so jitter wobbling around a single point cannot cause on/off
+chatter.
+
+- The **emulator** (`models/ambient_road_light.rs`) only *generates* a noisy signal:
+  baseline daylight + random jitter (~815–885), plus occasional **tunnel** events that
+  subtract a large drop for a random number of ticks. It does no debouncing; the deadband is
+  entirely the twin's job.
+- A **second, orthogonal** anti-chatter layer reinforces this: a lux request only fires from a
+  *settled* `Off`/`On` state (not from `OnRequested`/`OffRequested`), so no duplicate command
+  is issued while one is in flight; a 2 s ACK-wait timeout recovers to a safe state if no ACK
+  arrives. That is reliability/dedup, not hysteresis, but it works with the deadband.
+
+### Speed / operational warning: a temporal latch, **not** a value deadband
+
+There is **no** `SPEED_ON`/`SPEED_OFF` pair — entry and exit both reference the same
+`160 km/h` (`SPEED_EXTREME_OPERATION_THRESHOLD_KPH`). The anti-flap is a **5 s minimum dwell**
+(`RPM_STRESS_DURATION_THRESHOLD_SECS`). Recovery requires **both** clauses:
+
+```text
+warning_age ≥ 5 s   AND   !operational_warning_active(rpm, speed)
+```
+
+Behavioural consequences (the part that surprises people — capture verbatim for the blog):
+
+1. **The cooldown is an anti-flap *floor*, not an auto-clear timer.** The 5 s does not *cause*
+   the exit; it sets the earliest moment an exit is *allowed*. The hazard clearing is what
+   causes the exit; the timer only refuses to let it happen too soon. So: < 5 s + safe → still
+   held (floor not reached); ≥ 5 s + still dangerous → still held (condition not cleared);
+   ≥ 5 s + safe → leave.
+2. **The timer is stamped once at entry and never re-armed while latched.** `began_at` is
+   captured as `ExtremeOperationWarning(now)`; every subsequent event preserves
+   `ExtremeOperationWarning(*began_at)`. `warning_age` grows monotonically, so once the 5 s
+   floor is met it stays met for the whole episode — when the hazard finally clears (even 30 s
+   later) recovery is immediate on the next tick, with no fresh 5 s wait. The timer only
+   "resets" by genuinely leaving and re-entering the state (a new `began_at`).
+3. **The active gate reduces to `speed > 160`.** `operational_warning_active =
+   speed>160 OR (rpm>5500 AND speed>160)` — the second disjunct implies the first, so RPM>5500
+   can never *independently* keep the warning active (RPM 5500 ⇒ derived speed ≈ 627 km/h,
+   already > 160). The `5500` figure only controls the *second `LogWarning` line* at entry, not
+   the latch.
+4. **A hazard the physical world never resolves keeps the twin latched forever — by design.**
+   If the emulator never brings RPM down far enough that derived speed ≤ 160, the warning never
+   clears (buzzer stays on; `PowerOff` is rejected while in the warning). This is the
+   intended "stay in the safe/alert state while the condition persists" stance, not a bug.
+   Precisely, it is latched while **derived speed > 160** (RPM ≳ 1400), not literally while
+   RPM > 5500.
+
+### Cross-cutting notes
+
+- **Both guards are the emulator-independent control logic of the twin.** The emulator only
+  decides *whether the trigger condition is met* via the RPM/lux values it sends; it has no
+  role in the deadband, the cooldown, the clock (`Instant::now()` supplied by the actor), or
+  the `TimerTick` cadence (emitted by the gateway's timer loop, `spawn_timer_tick_loop`).
+- **Iteration 1 vs Iteration 2: behaviour identical, shape different.** Same constants
+  (840/860, 160, 5 s, ×0.114). Iteration 2 owns the predicates on the assemblies
+  (`HeadlampContext::evaluate_lux`, `PowertrainContext::is_operational_warning_active` /
+  `is_stationary`); Iteration 1 had the same logic inline in `step.rs` over a flat
+  `VehicleContext`.
+
+### Glossary — naming the same phenomenon across fields
+
+All of these point at the same thing: a noisy input repeatedly crossing a threshold and
+dragging the output back and forth. Useful when choosing register for README vs blog.
+
+| Term | Native field | Notes |
+|---|---|---|
+| **Flapping** | networking / monitoring | Route/link flapping; Nagios-style "flapping" check state. Borrowed, but widely understood as "a state toggling too often." The README uses *chatter (a.k.a. flapping)*. |
+| **Chatter** | automotive / electromechanical | *Relay chatter* / *contact chatter* — a relay or switch buzzing on/off near its threshold. Closest to an automotive-native term. |
+| **Hunting** | control theory / powertrain | Oscillation around a setpoint (e.g. idle-speed hunting); also "limit cycling." |
+| **Bounce** | switches / sensors | Mechanical switch-contact bounce; the fix is **debounce** (the verb used in these notes). |
+| **Intermittent** | diagnostics (DTCs) | How an unstable signal tends to be *logged*, rather than the oscillation itself. |
+| **Hysteresis / deadband** | the cure (value-based) | Dual-threshold dead zone (our lux 840/860). |
+| **Dwell / debounce timer / minimum-on-time** | the cure (time-based) | A minimum-stay floor (our 5 s operational-warning cooldown). |
+
+### TODO — decide README / blog coverage
+Decide how much of the above to surface where: the **lux deadband** is already mentioned in the
+README (`LUX_ON`/`LUX_OFF`); the **speed temporal latch** and especially points (1)–(4) above
+are good blog material (a clean "two anti-flap tools for two kinds of boundary" beat) but may be
+more than the README needs. Trim accordingly when promoting.
+
+---
+
 ## Q1 — Do `transition_tx` and `diagnostic_tx` really need to be separate?
 
 **Verdict: keep them separate, but they are not peers.** One is a *fact ledger*, the
