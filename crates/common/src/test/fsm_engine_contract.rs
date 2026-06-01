@@ -1,11 +1,11 @@
 //! Unit tests for the FSM spec (`transition` / `output`).
 
-use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, VehicleContext};
-use crate::vehicle_constants::{
+use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState};
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{
     extreme_operation_active, EXTREME_OPERATION_WARNING_MESSAGE, RPM_EXTREME_OPERATION_THRESHOLD,
     SPEED_EXTREME_OPERATION_THRESHOLD_KPH, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
-use crate::vehicle_kinematics::refresh_context_speed;
 use std::time::{Duration, Instant};
 
 fn ctx_with_rpm(rpm: u16) -> VehicleContext {
@@ -14,7 +14,7 @@ fn ctx_with_rpm(rpm: u16) -> VehicleContext {
     ctx.powertrain.wheel_rpm.front_right = rpm;
     ctx.powertrain.wheel_rpm.rear_left = rpm;
     ctx.powertrain.wheel_rpm.rear_right = rpm;
-    refresh_context_speed(&mut ctx);
+    ctx.powertrain.refresh_speed();
     ctx
 }
 

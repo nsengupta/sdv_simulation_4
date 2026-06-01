@@ -5,4 +5,5 @@
 !.idea/.gitignore
 
 *.output
+Tangle-guard-output.txt
 .ralph/

@@ -1,7 +1,7 @@
 //! Contract tests for projection boundaries between physical and digital vocabularies.
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::engine::connectors::{PhysicalToDigitalProjector, ProjectionError, Projector};
+use crate::twin_runtime::connectors::{PhysicalToDigitalProjector, ProjectionError, Projector};
 use crate::fsm::FsmEvent;
 use crate::{PhysicalCarVocabulary, VssSignal};
 

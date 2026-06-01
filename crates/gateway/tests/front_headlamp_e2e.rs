@@ -11,10 +11,9 @@
 
 use std::time::Duration;
 
-use common::fsm::LightingState;
-use common::vehicle_constants::FRONT_HEADLAMP_ON_ACK_WAIT;
-use common::{
-    PhysicalCarVocabulary, VehicleController, VehicleControllerRuntimeOptions, VssSignal,
+use common::facade::{
+    FRONT_HEADLAMP_ON_ACK_WAIT, LightingState, PhysicalCarVocabulary, VehicleController,
+    VehicleControllerRuntimeOptions, VssSignal,
 };
 
 #[tokio::test]

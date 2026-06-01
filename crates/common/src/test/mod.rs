@@ -14,9 +14,6 @@ mod actor_contract;
 mod controller_api_contract;
 
 #[cfg(test)]
-mod engine_namespace_contract;
-
-#[cfg(test)]
 mod fsm_engine_contract;
 
 #[cfg(all(test, feature = "proptest"))]
@@ -29,7 +26,7 @@ mod fsm_step_contract;
 mod lighting_step_contract;
 
 #[cfg(test)]
-mod op_strategy_contract;
+mod transition_map_contract;
 
 #[cfg(test)]
 mod projection_contract;
@@ -70,7 +67,7 @@ impl<T: ractor::Message> Drop for ActorGuard<T> {
 // reuse the existing public seams (`VehicleControllerRuntimeOptions`, `submit_physical_car_event`).
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
+use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController};
 use tokio::sync::mpsc;
 

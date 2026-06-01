@@ -8,6 +8,11 @@ use std::time::Duration;
 pub const RPM_IDLE: u16 = 800;
 pub const RPM_REDLINE_THRESHOLD: u16 = 7000;
 
+/// Minimum RPM strictly above this enters [`crate::fsm::FsmState::Driving`] from Idle
+/// (see `fsm::transition_map` and law `rpm_above_threshold` in
+/// `digital_twin::car_behaviour_checker`).
+pub const RPM_DRIVING_THRESHOLD: u16 = 1000;
+
 pub const RPM_STRESS_DURATION_THRESHOLD_SECS: u64 = 5;
 
 /// RPM above this while speed exceeds [`SPEED_EXTREME_OPERATION_THRESHOLD_KPH`] triggers

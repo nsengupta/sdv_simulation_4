@@ -1,17 +1,17 @@
-use crate::fsm::machineries::{FsmAction, FsmEvent, FsmState};
-use crate::fsm::VehicleContext;
-use crate::vehicle_constants::{
+use super::machineries::{FsmAction, FsmEvent, FsmState};
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{
     extreme_operation_active, speed_threshold_exceeded, EXTREME_OPERATION_WARNING_MESSAGE,
-    RPM_STRESS_DURATION_THRESHOLD_SECS, SPEED_THRESHOLD_WARNING_MESSAGE,
+    RPM_DRIVING_THRESHOLD, RPM_STRESS_DURATION_THRESHOLD_SECS, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
 use std::time::{Duration, Instant};
 
-/// Transition spec (runtime source of truth).
+/// Operational mode transition table (Off / Idle / Driving / ExtremeOperationWarning).
 ///
 /// Human table:
 /// - Off + PowerOn(healthy ctx) -> Idle
 /// - Idle + PowerOff -> Off
-/// - Idle + UpdateRpm(rpm > 1000) -> Driving
+/// - Idle + UpdateRpm(rpm > [`RPM_DRIVING_THRESHOLD`]) -> Driving
 /// - Driving + derived ctx.powertrain.speed_kph == 0 -> Idle (any event, after kinematic refresh in `step`)
 /// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
 /// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 ///
 /// # Purity
 ///
-/// This is a pure decision function: no I/O, no logging. If a transition (or non-transition)
-/// is noteworthy, a [`TransitionNote`] is returned so the caller can decide how to handle it.
+/// Pure decision function: no I/O, no logging. If a transition (or non-transition) is noteworthy,
+/// a [`TransitionNote`] is returned so the caller can decide how to handle it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransitionNote {
     /// A non-transition the caller may want to log as a warning.
@@ -52,7 +52,9 @@ pub fn transition(
         },
         Idle => match event {
             PowerOff => TransitionResult { next_state: Off, note: None },
-            UpdateRpm(rpm) if *rpm > 1000 => TransitionResult { next_state: Driving, note: None },
+            UpdateRpm(rpm) if *rpm > RPM_DRIVING_THRESHOLD => {
+                TransitionResult { next_state: Driving, note: None }
+            }
             _ => TransitionResult { next_state: Idle, note: None },
         },
         Driving => match event {

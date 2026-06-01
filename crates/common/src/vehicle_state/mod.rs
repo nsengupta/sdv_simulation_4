@@ -1,11 +1,10 @@
-//! Per-assembly (zone) context.
+//! L1 vehicle state: per-assembly (zone) contexts and the aggregate [`VehicleContext`].
 //!
 //! Each assembly owns its own data **and** the behavior over that data (receive,
 //! derive, expose). [`VehicleContext`] is only an aggregate of the assemblies.
 //!
-//! This split is the Step 1 groundwork for the zone-actor plan (ADR 0001): in
-//! Step 2 each field below migrates into its own child actor, and these `impl`
-//! blocks become that actor's local behavior.
+//! Independent of the FSM pattern — consumed by `fsm::step`, held by `DigitalTwinCar`.
+//! Step 2 groundwork for the zone-actor plan (ADR 0001).
 
 pub mod front_headlamp;
 pub mod health;

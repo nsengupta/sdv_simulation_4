@@ -3,9 +3,9 @@
 use proptest::prelude::*;
 use std::time::{Duration, Instant};
 
-use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, LightingState, VehicleContext};
-use crate::vehicle_constants::{LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD};
-use crate::vehicle_kinematics::refresh_context_speed;
+use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, LightingState};
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD};
 
 fn ctx_with_rpm(rpm: u16) -> VehicleContext {
     let mut ctx = VehicleContext::default();
@@ -13,7 +13,7 @@ fn ctx_with_rpm(rpm: u16) -> VehicleContext {
     ctx.powertrain.wheel_rpm.front_right = rpm;
     ctx.powertrain.wheel_rpm.rear_left = rpm;
     ctx.powertrain.wheel_rpm.rear_right = rpm;
-    refresh_context_speed(&mut ctx);
+    ctx.powertrain.refresh_speed();
     ctx
 }
 
@@ -25,7 +25,7 @@ prop_compose! {
         ctx.powertrain.wheel_rpm.rear_left = rpm;
         ctx.powertrain.wheel_rpm.rear_right = rpm;
         ctx.headlamp.state = LightingState::Off;
-        refresh_context_speed(&mut ctx);
+        ctx.powertrain.refresh_speed();
         ctx
     }
 }

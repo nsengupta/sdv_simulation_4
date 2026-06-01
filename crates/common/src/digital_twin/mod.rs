@@ -1,13 +1,14 @@
 //! Digital twin runtime model: snapshot, invariants, and actor mailbox vocabulary.
 //!
-//! Depends on [`crate::fsm`] for [`FsmState`], [`FsmEvent`], and [`VehicleContext`] only — the FSM
-//! crate module does not reference this layer.
+//! Depends on [`crate::fsm`] for [`FsmState`] and [`FsmEvent`], and on
+//! [`crate::vehicle_state`] for [`VehicleContext`] — the FSM crate module does not reference this layer.
 
 mod car_behaviour_checker;
 
 pub use car_behaviour_checker::{verify_state_laws, LawViolation, StateLaw, STATE_LAWS};
 
-use crate::fsm::{FsmEvent, FsmState, VehicleContext};
+use crate::fsm::{FsmEvent, FsmState};
+use crate::vehicle_state::VehicleContext;
 use ractor::RpcReplyPort;
 
 /// Returned when a [`DigitalTwinCar`] cannot be constructed because a constituent is invalid.

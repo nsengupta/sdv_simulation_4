@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::digital_twin::DigitalTwinCar;
-use crate::engine::controller::{ActuationCommand, CorrelationId};
+use crate::twin_runtime::controller::{ActuationCommand, CorrelationId};
 use crate::fsm::DomainAction;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

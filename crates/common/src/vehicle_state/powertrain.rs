@@ -1,12 +1,12 @@
 //! Powertrain assembly: wheel RPM input and derived ground speed.
 //!
 //! Self-sufficient: it receives a bus RPM reading, derives speed (via
-//! [`crate::vehicle_kinematics`]), and exposes raw + derived values and a local
+//! [`crate::vehicle_physics::kinematics`]), and exposes raw + derived values and a local
 //! mode. Nothing here performs I/O. In Step 2 this becomes `PowertrainActor`'s
 //! local state + flat FSM.
 
-use crate::vehicle_constants::{operational_warning_active, RPM_IDLE, RPM_REDLINE_THRESHOLD};
-use crate::vehicle_kinematics::calculate_speed_from_rpm;
+use crate::vehicle_physics::constants::{operational_warning_active, RPM_IDLE, RPM_REDLINE_THRESHOLD};
+use crate::vehicle_physics::kinematics::calculate_speed_from_rpm;
 
 /// Per-wheel RPM. Today a single bus RPM is broadcast to all four wheels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub enum PowertrainMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowertrainContext {
     pub wheel_rpm: WheelRpm,
-    /// Derived ground speed in km/h (from wheel RPM via [`crate::vehicle_kinematics`]).
+    /// Derived ground speed in km/h (from wheel RPM via [`crate::vehicle_physics::kinematics`]).
     pub speed_kph: u16,
 }
 

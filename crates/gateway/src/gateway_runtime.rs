@@ -1,9 +1,9 @@
 //! Gateway wiring: controller install, background loops, and CAN read loop. Keeps `main` thin.
 
 use anyhow::Result;
-use common::{
-    ACK_OFF, ACK_ON, MSG_ACK_OFF, MSG_ACK_ON, MSG_NACK_OFF, MSG_NACK_ON, NACK_OFF, NACK_ON,
-    ActuationCommand, PhysicalCarVocabulary, VehicleController,
+use common::facade::{
+    ACK_OFF, ACK_ON, ActuationCommand, MSG_ACK_OFF, MSG_ACK_ON, MSG_NACK_OFF, MSG_NACK_ON,
+    NACK_OFF, NACK_ON, PhysicalCarVocabulary, PublishedTransitionRecord, VehicleController,
     VehicleControllerRuntimeOptions, VehicleEvent, VssSignal, spawn_stdout_diagnostic_observer,
 };
 use socketcan::{CanSocket, Socket};
@@ -55,7 +55,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
 
     // Transition channel: twin emits PublishedTransitionRecord, optionally printed to stdout.
     let transition_tx = if launch.print_transitions {
-        let (tx, mut rx) = mpsc::channel::<common::PublishedTransitionRecord>(256);
+        let (tx, mut rx) = mpsc::channel::<PublishedTransitionRecord>(256);
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
                 println!(
@@ -103,7 +103,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     spawn_timer_tick_loop(controller.clone());
 
     println!(
-        "⚡ Gateway on {} — CAN → VehicleEvent → PhysicalCarVocabulary → DigitalTwinCarVocabulary → VirtualCarActor",
+        "⚡ Gateway on {} — CAN → VehicleEvent → PhysicalCarVocabulary → VehicleController",
         launch.can_interface
     );
     println!(

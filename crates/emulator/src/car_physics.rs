@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use common::domain_types::RPM_IDLE;
-use common::vehicle_kinematics::calculate_speed_from_rpm;
+use common::vehicle_physics::calculate_speed_from_rpm;
 
 use crate::models::{AmbientRoadLightModel, PhysicalWorldModelConfig, RpmModel};
 
@@ -66,7 +66,7 @@ impl PhysicalCar {
 mod tests {
     use super::PhysicalCar;
     use common::domain_types::{RPM_IDLE, RPM_REDLINE_THRESHOLD};
-    use common::vehicle_kinematics::calculate_speed_from_rpm;
+    use common::vehicle_physics::calculate_speed_from_rpm;
 
     #[test]
     fn smoke_new_car_starts_at_idle_rpm() {

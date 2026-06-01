@@ -1,6 +1,6 @@
 use crate::digital_twin::{CarSnapshot, DigitalTwinCarVocabulary};
-use crate::engine::controller::actuation_contract::ActuationCommand;
-use crate::engine::connectors::{PhysicalToDigitalProjector, Projector};
+use crate::twin_runtime::controller::actuation_contract::ActuationCommand;
+use crate::twin_runtime::connectors::{PhysicalToDigitalProjector, Projector};
 use crate::fsm::FsmEvent;
 use crate::transition_sink::PublishedTransitionRecord;
 use crate::PhysicalCarVocabulary;

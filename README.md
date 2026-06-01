@@ -137,7 +137,7 @@ One mailbox message → one authoritative cut. The actor loop is fixed-order:
 
 **`RequestFrontHeadlampOn` does not flip the lamp in the action phase.** Inside `step()`, lux crossing the threshold moves lighting to `OnRequested` and emits the command; `On` arrives only when a later ACK event runs through `step()`. ACK/NACK on CAN becomes a **new** mailbox event.
 
-Each ledger record lists **intended** `DomainAction`s from that step. Runtime-only hints (e.g. actor mode) are filtered out of the stored record; ACK, NACK, timeout, and failure remain separate facts. See `crates/common/src/fsm/step.rs` and `crates/common/src/engine/controller/virtual_car_actor.rs`.
+Each ledger record lists **intended** `DomainAction`s from that step. Runtime-only hints (e.g. actor mode) are filtered out of the stored record; ACK, NACK, timeout, and failure remain separate facts. See `crates/common/src/fsm/step.rs` and `crates/common/src/twin_runtime/controller/virtual_car_actor.rs`.
 
 ---
 
@@ -172,7 +172,7 @@ A live run with `Ctrl-S` / `Ctrl-Q` (XOFF/XON) exposed two gaps, both fixed in t
 
 | Gap | Fix | Where |
 | --- | --- | --- |
-| Clean headlamp ACK was silent on the diagnostic stream (ledger had the context diff) | Compare `headlamp.state` before/after `step()`; emit `diag_front_headlamp_confirmed` on `*Requested → On/Off` | `crates/common/src/engine/controller/virtual_car_actor.rs` |
+| Clean headlamp ACK was silent on the diagnostic stream (ledger had the context diff) | Compare `headlamp.state` before/after `step()`; emit `diag_front_headlamp_confirmed` on `*Requested → On/Off` | [`crates/common/src/twin_runtime/controller/virtual_car_actor.rs`](crates/common/src/twin_runtime/controller/virtual_car_actor.rs) |
 | Synchronous logging on the CAN ingress / actuator loop could stall protocol handling | Bounded log queue, non-blocking `try_send`, drop-on-full; gateway submits ACK/NACK to the twin **before** logging | `crates/gateway/src/gateway_runtime.rs`, `crates/front_headlamp_actuator/src/main.rs` |
 
 ---
@@ -255,7 +255,7 @@ These are documented **non-goals for the milestone**, not oversights.
 
 | Crate                                                            | Responsibility                                                                                                                                                                                                                                                                               |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [**`common`**](crates/common/)                                   | VSS encode/decode, vocabularies, projection, FSM + `step`, **per-assembly contexts** (`fsm/assembly/*`), **`published`** serializable mirror, `VirtualCarActor`, `VehicleController`, actuation manager, state-law catalog, `vehicle_constants`, `vehicle_kinematics`, `front_headlamp_log`. |
+| [**`common`**](crates/common/)                                   | VSS encode/decode, vocabularies, projection, FSM + `step`, **per-assembly contexts** (`vehicle_state/*`), **`published`** serializable mirror, `VirtualCarActor`, `VehicleController`, actuation manager, state-law catalog, `vehicle_physics`, `front_headlamp_log`. |
 | [**`vehicle_device_bus`**](crates/vehicle_device_bus/)           | Front-headlamp CAN codec, wire kinds, ingress policy.                                                                                                                                                                                                                                        |
 | [**`emulator`**](crates/emulator/)                               | World models (RPM target tracking, lux jitter/tunnels) → telemetry frames.                                                                                                                                                                                                                   |
 | [**`gateway`**](crates/gateway/)                                 | `main` + `gateway_runtime`: install twin, CAN loop, timer tick, CMD TX, bounded log side-channel.                                                                                                                                                                                            |
@@ -265,8 +265,8 @@ Key files:
 
 | What             | Path                                                                                                                 |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| FSM table        | [`crates/common/src/engine/op_strategy/transition_map.rs`](crates/common/src/engine/op_strategy/transition_map.rs)   |
-| Assemblies       | [`crates/common/src/fsm/assembly/`](crates/common/src/fsm/assembly/)                                                 |
+| FSM table        | [`crates/common/src/fsm/transition_map.rs`](crates/common/src/fsm/transition_map.rs)   |
+| Assemblies       | [`crates/common/src/vehicle_state/`](crates/common/src/vehicle_state/)                                                 |
 | Published mirror | [`crates/common/src/published.rs`](crates/common/src/published.rs)                                                   |
 | State laws       | [`crates/common/src/digital_twin/car_behaviour_checker.rs`](crates/common/src/digital_twin/car_behaviour_checker.rs) |
 
@@ -371,7 +371,7 @@ Major milestones ahead (not in priority order). Carries forward open items from
 
 - **Actorification** — parent FSM actor + per-zone child actors (assemblies → actors); unified diagnostic fan-in
 - **Observability & audit** — single-writer ledger actor, correlation IDs end-to-end, diagnostics-as-projection of the ledger; offline file writer + folding verifier
-- **Actuation resilience** — when the actuator is down or dropping responses, lux-driven reconcile currently re-requests every telemetry tick and emits a timeout warning every tick (unbounded command spam, no recovery). Next iteration: bounded retry/backoff, dedup of pending requests, explicit degraded/`Unknown` lighting state, rate-limited "peer persistently unavailable" diagnostic. Design input: **WI-13** in [`docs/design-notes-runtime-observation.md`](docs/design-notes-runtime-observation.md) (anchors: `crates/common/src/fsm/assembly/front_headlamp.rs`).
+- **Actuation resilience** — when the actuator is down or dropping responses, lux-driven reconcile currently re-requests every telemetry tick and emits a timeout warning every tick (unbounded command spam, no recovery). Next iteration: bounded retry/backoff, dedup of pending requests, explicit degraded/`Unknown` lighting state, rate-limited "peer persistently unavailable" diagnostic. Design input: **WI-13** in [`docs/design-notes-runtime-observation.md`](docs/design-notes-runtime-observation.md) (anchors: `crates/common/src/vehicle_state/front_headlamp.rs`).
 - **Observed-speed ECU & fusion** — wire path for `0x101` vs RPM-derived kinematic speed
 - **Standards alignment** — official COVESA VSS / databroker; DBC-driven CAN IDs
 - **Transport & scale-up** — CLI/env CAN interface; additional `vehicle_device_bus` devices and zones

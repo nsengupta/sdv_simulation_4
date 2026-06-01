@@ -1,7 +1,7 @@
 //! Contract tests for async VehicleController facade APIs.
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::engine::controller::virtual_car_actor::VirtualCarActor;
+use crate::twin_runtime::controller::virtual_car_actor::VirtualCarActor;
 use crate::fsm::{FsmEvent, FsmState};
 use crate::test::ActorGuard;
 use crate::{PhysicalCarVocabulary, VehicleController};

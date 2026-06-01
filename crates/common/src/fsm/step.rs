@@ -16,12 +16,12 @@
 //!
 //! Orchestration only:
 //! - Per-assembly data mutation + derivation lives on the assemblies
-//!   (`crate::fsm::assembly`); `step` decides *when* to invoke them, runs the
+//!   (`crate::vehicle_state`); `step` decides *when* to invoke them, runs the
 //!   operational FSM, and maps results into [`DomainAction`].
 
-use super::assembly::VehicleContext;
+use crate::vehicle_state::VehicleContext;
 use super::machineries::{ActorModeHintFromDomain, DomainAction, FsmAction, FsmEvent, FsmState};
-use crate::engine::op_strategy::transition_map::{output, transition, TransitionNote};
+use super::transition_map::{output, transition, TransitionNote};
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq)]

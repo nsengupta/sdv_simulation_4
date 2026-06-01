@@ -7,7 +7,7 @@
 //!
 //! Design contract (see `docs/design-notes-runtime-observation.md`, item "(1)"):
 //! - **Permanence of `Instant` inside:** [`crate::fsm::FsmState`],
-//!   [`crate::fsm::VehicleContext`], and [`crate::fsm::RawTransitionRecord`] stay `Instant`-bearing
+//!   [`crate::vehicle_state::VehicleContext`], and [`crate::fsm::RawTransitionRecord`] stay `Instant`-bearing
 //!   and serde-free. Nothing here mutates the functional core.
 //! - **Duration for the world:** this module owns the full, lossless mirror of those types with
 //!   each `Instant` replaced by a wall-clock `Duration` since `UNIX_EPOCH`, plus all serde.
@@ -21,9 +21,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::fsm::{
     ActorModeHintFromDomain, DomainAction, FrontHeadlampIncompleteCause,
-    FrontHeadlampSwitchDirection, FsmEvent, FsmState, HeadlampContext, LightingState,
-    PowertrainContext, RawTransitionRecord, VehicleContext, VehicleHealthContext,
-    VisibilityContext, WheelRpm,
+    FrontHeadlampSwitchDirection, FsmEvent, FsmState, LightingState, RawTransitionRecord,
+};
+use crate::vehicle_state::{
+    HeadlampContext, PowertrainContext, VehicleContext, VehicleHealthContext, VisibilityContext,
+    WheelRpm,
 };
 
 /// Per-session correlation between the monotonic clock and the wall clock.

@@ -1,7 +1,7 @@
 //! Actor-oriented contract tests (mailbox -> step -> persistence/emit sequencing).
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
+use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{FsmEvent, LightingState};
 use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{

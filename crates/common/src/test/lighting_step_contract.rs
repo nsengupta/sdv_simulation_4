@@ -2,9 +2,10 @@
 
 use crate::fsm::{
     step, FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, DomainAction, FsmEvent,
-    FsmState, LightingState, VehicleContext,
+    FsmState, LightingState,
 };
-use crate::vehicle_constants::{
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{
     FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
 };
 use std::time::Instant;

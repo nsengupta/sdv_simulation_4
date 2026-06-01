@@ -15,7 +15,7 @@ use crate::front_headlamp_log;
 use crate::fsm::machineries::{
     DomainAction, FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, LightingState,
 };
-use crate::vehicle_constants::{
+use crate::vehicle_physics::{
     FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT, LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD,
 };
 

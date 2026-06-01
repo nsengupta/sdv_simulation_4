@@ -1,13 +1,13 @@
 //! FSM state, events, domain actions, and lighting vocabulary for the vehicle twin.
 //!
-//! Assembly (zone) **data** lives in `crate::fsm::assembly`; this module holds the
+//! Assembly (zone) **data** lives in `crate::vehicle_state`; this module holds the
 //! shared FSM/domain vocabulary that assemblies, the operational FSM, and the
 //! runtime actor all depend on.
 //!
 //! ## Front-headlamp incomplete / timeout
 //!
-//! ACK wait policy and recovery live in `crate::fsm::assembly::front_headlamp` and
-//! `crate::vehicle_constants`. See README *Known Demo Behaviors* for user-visible effects.
+//! ACK wait policy and recovery live in `crate::vehicle_state::front_headlamp` and
+//! `crate::vehicle_physics`. See README *Known Demo Behaviors* for user-visible effects.
 
 use crate::domain_types::VehicleState;
 use std::time::Instant;
@@ -49,7 +49,7 @@ pub enum FsmState {
     Off,
     Idle,
     Driving,
-    /// Speed > 160 km/h and RPM > 5500 sustained (see [`crate::vehicle_constants`]).
+    /// Speed > 160 km/h and RPM > 5500 sustained (see [`crate::vehicle_physics`]).
     ExtremeOperationWarning(Instant),
 }
 

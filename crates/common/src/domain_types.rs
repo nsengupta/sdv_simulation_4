@@ -1,5 +1,5 @@
 use crate::signals::VssSignal;
-pub use crate::vehicle_constants::{
+pub use crate::vehicle_physics::{
     RPM_EXTREME_OPERATION_THRESHOLD, RPM_IDLE, RPM_REDLINE_THRESHOLD,
     RPM_STRESS_DURATION_THRESHOLD_SECS, SPEED_EXTREME_OPERATION_THRESHOLD_KPH,
 };

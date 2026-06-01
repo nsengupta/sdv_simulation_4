@@ -10,4 +10,3 @@ anyhow = "1.0.102"
 socketcan = "3.5.0"
 # Pin below 1.51: tokio 1.51+ requires tokio-macros 2.7, not always in sparse index mirrors.
 tokio = { version = "=1.48.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
-ractor = "0.15.12"

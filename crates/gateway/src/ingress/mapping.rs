@@ -1,4 +1,4 @@
-use common::{PhysicalCarVocabulary, VehicleEvent};
+use common::facade::{PhysicalCarVocabulary, VehicleEvent};
 
 /// Maps ingress/domain events to the canonical physical vocabulary.
 pub fn vehicle_event_to_physical_vocabulary(ev: VehicleEvent) -> PhysicalCarVocabulary {
@@ -12,7 +12,7 @@ pub fn vehicle_event_to_physical_vocabulary(ev: VehicleEvent) -> PhysicalCarVoca
 #[cfg(test)]
 mod tests {
     use super::vehicle_event_to_physical_vocabulary;
-    use common::{PhysicalCarVocabulary, VehicleEvent, VssSignal};
+    use common::facade::{PhysicalCarVocabulary, VehicleEvent, VssSignal};
 
     #[test]
     fn given_timer_tick_when_mapped_then_returns_physical_timer_tick() {

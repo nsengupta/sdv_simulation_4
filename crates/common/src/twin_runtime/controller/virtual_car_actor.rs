@@ -12,11 +12,15 @@ use std::sync::Arc;
 
 use crate::diagnostic::{DiagnosticMessage, DiagnosticSink, TokioMpscDiagnosticSink, diag_front_headlamp_confirmed, diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_warning, diag_transition_sink_full, diag_transition_sink_closed};
 use crate::digital_twin::{CarSnapshot, DigitalTwinCar, DigitalTwinCarVocabulary};
-use crate::engine::controller::actuation_manager::{
+use crate::twin_runtime::controller::actuation_manager::{
     ActuationManager, DefaultActuationManager,
 };
-use crate::engine::controller::vehicle_controller::VehicleControllerRuntimeOptions;
-use crate::fsm::{self, ActorModeHintFromDomain, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState, LightingState, VehicleContext};
+use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
+use crate::fsm::{
+    self, ActorModeHintFromDomain, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState,
+    LightingState,
+};
+use crate::vehicle_state::VehicleContext;
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
 use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
 

@@ -1,4 +1,5 @@
-//! Gateway — CAN ingress speaks [`common::VehicleEvent`]; the actor consumes [`common::DigitalTwinCarVocabulary`].
+//! Gateway — CAN ingress speaks [`common::facade::VehicleEvent`]; the twin is driven via
+//! [`common::facade::VehicleController`] only (no direct FSM or actor imports).
 //!
 //! Runtime wiring lives in [`gateway_runtime`] so this file stays a thin entrypoint.
 

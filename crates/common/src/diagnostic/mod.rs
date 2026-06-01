@@ -4,8 +4,9 @@
 //! The runtime decides who reads the RX side and how to display them.
 
 use crate::front_headlamp_log::{ACK_OFF, ACK_ON, MSG_ACK_OFF, MSG_ACK_ON};
-use crate::fsm::{FrontHeadlampSwitchDirection, FsmState, VehicleContext};
-use crate::vehicle_constants::{
+use crate::fsm::{FrontHeadlampSwitchDirection, FsmState};
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{
     extreme_operation_active, speed_threshold_exceeded, SPEED_EXTREME_OPERATION_THRESHOLD_KPH,
 };
 

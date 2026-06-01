@@ -356,7 +356,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "common",
- "ractor",
  "socketcan",
  "tokio",
  "vehicle_device_bus",

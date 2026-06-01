@@ -1,8 +1,9 @@
 //! Unit tests for the FSM step contract (`step`).
 
 use crate::digital_twin::{verify_state_laws, DigitalTwinCar, DigitalTwinCarError};
-use crate::fsm::{step, DomainAction, FsmEvent, FsmState, VehicleContext};
-use crate::vehicle_constants::{
+use crate::fsm::{step, DomainAction, FsmEvent, FsmState};
+use crate::vehicle_state::VehicleContext;
+use crate::vehicle_physics::{
     EXTREME_OPERATION_WARNING_MESSAGE, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
 use std::time::{Duration, Instant};
@@ -188,7 +189,7 @@ fn test_state_laws_flag_an_illegal_cut() {
     // breaches `rpm_above_threshold`, reported by name.
     let illegal_ctx = {
         let mut c = valid_twin_context();
-        c.powertrain.wheel_rpm.front_left = 100; // below the 500 stall threshold
+        c.powertrain.wheel_rpm.front_left = 100; // below RPM_DRIVING_THRESHOLD
         c
     };
 
@@ -204,7 +205,7 @@ fn test_step_warning_recovery_on_tick_uses_passed_time() {
     let ctx = {
         let mut c = valid_twin_context();
         c.powertrain.wheel_rpm.front_left = 1000;
-        crate::vehicle_kinematics::refresh_context_speed(&mut c);
+        c.powertrain.refresh_speed();
         c
     };
 
