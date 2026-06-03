@@ -91,7 +91,7 @@ Still frames from a live three-process run on `vcan0`. Both show the same gatewa
 
 **Daylight band (headlamp off)** — ambient lux stays above the OFF threshold (`LUX_OFF` 860).
 
-The twin keeps `LightingState::Off`; the gateway log has no headlamp CMD or ACK/NACK lines.
+The twin keeps `HeadlampState::Off`; the gateway log has no headlamp CMD or ACK/NACK lines.
 
 ![Gateway run in daylight — headlamp off, no actuation traffic](assets/runtime-screenshot-no-headlamp.png)
 
@@ -121,7 +121,7 @@ VehicleContext
 ├── powertrain : PowertrainContext   // WheelRpm (4 wheels) + derived speed_kph + PowertrainMode
 ├── health     : VehicleHealthContext// fuel / oil / tyre
 ├── visibility : VisibilityContext   // ambient lux
-└── headlamp   : HeadlampContext     // LightingState + ACK-wait bookkeeping
+└── headlamp   : HeadlampContext     // HeadlampState + ACK-wait bookkeeping
 ```
 
 `fsm::step` has become a thin **orchestrator**: it dispatches each event to the owning assembly (`apply_rpm`, `apply_lux`, `apply_on_ack`, …), triggers derivations (`refresh_speed`), and runs the operational FSM — but the subsystem *behaviour* lives on the assembly types.
@@ -216,7 +216,7 @@ Off ──PowerOn──► Idle ◄──speed=0── Driving
                                  Driving or Idle
 ```
 
-Front-headlamp progress is tracked separately in **`LightingState`** (`Off` → `OnRequested` →`On` → `OffRequested` → …) inside the headlamp assembly — not as extra top-level FSM states. So at any instant the twin holds 
+Front-headlamp progress is tracked separately in **`HeadlampState`** (`Off` → `OnRequested` → `On` → `OffRequested` → …) inside the headlamp zone — not as extra top-level FSM states. So at any instant the twin holds 
 
 * **one primary mode** plus,
 

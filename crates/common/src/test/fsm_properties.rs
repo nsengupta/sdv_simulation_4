@@ -3,7 +3,7 @@
 use proptest::prelude::*;
 use std::time::{Duration, Instant};
 
-use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, LightingState};
+use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, HeadlampState};
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{LUX_OFF_THRESHOLD, LUX_ON_THRESHOLD};
 
@@ -24,7 +24,7 @@ prop_compose! {
         ctx.powertrain.wheel_rpm.front_right = rpm;
         ctx.powertrain.wheel_rpm.rear_left = rpm;
         ctx.powertrain.wheel_rpm.rear_right = rpm;
-        ctx.headlamp.state = LightingState::Off;
+        ctx.headlamp.state = HeadlampState::Off;
         ctx.powertrain.refresh_speed();
         ctx
     }
@@ -58,11 +58,11 @@ proptest! {
         lux in (LUX_ON_THRESHOLD + 1)..LUX_OFF_THRESHOLD
     ) {
         let mut ctx = VehicleContext::default();
-        ctx.headlamp.state = LightingState::Off;
+        ctx.headlamp.state = HeadlampState::Off;
         let result = step(&FsmState::Idle, &ctx, &FsmEvent::UpdateAmbientLux(lux), Instant::now());
         prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOn));
         prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOff));
-        prop_assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+        prop_assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     }
 
     #[test]
@@ -70,11 +70,11 @@ proptest! {
         lux in (LUX_ON_THRESHOLD + 1)..LUX_OFF_THRESHOLD
     ) {
         let mut ctx = VehicleContext::default();
-        ctx.headlamp.state = LightingState::On;
+        ctx.headlamp.state = HeadlampState::On;
         let result = step(&FsmState::Driving, &ctx, &FsmEvent::UpdateAmbientLux(lux), Instant::now());
         prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOn));
         prop_assert!(!result.actions.contains(&DomainAction::RequestFrontHeadlampOff));
-        prop_assert_eq!(result.modified_ctx.headlamp.state, LightingState::On);
+        prop_assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::On);
     }
 }
 

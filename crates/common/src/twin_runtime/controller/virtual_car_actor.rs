@@ -18,7 +18,7 @@ use crate::twin_runtime::controller::actuation_manager::{
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{
     self, ActorModeHintFromDomain, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState,
-    LightingState,
+    HeadlampState,
 };
 use crate::vehicle_state::VehicleContext;
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
@@ -262,12 +262,12 @@ impl Actor for VirtualCarActor {
 /// *failed* OFF recovers to `On` and a failed ON recovers to `Off`, so matching the exact
 /// `*Requested → settled` pair flags success only (no false positives from recovery).
 fn front_headlamp_confirmed_direction(
-    before: LightingState,
-    after: LightingState,
+    before: HeadlampState,
+    after: HeadlampState,
 ) -> Option<FrontHeadlampSwitchDirection> {
     match (before, after) {
-        (LightingState::OnRequested, LightingState::On) => Some(FrontHeadlampSwitchDirection::On),
-        (LightingState::OffRequested, LightingState::Off) => Some(FrontHeadlampSwitchDirection::Off),
+        (HeadlampState::OnRequested, HeadlampState::On) => Some(FrontHeadlampSwitchDirection::On),
+        (HeadlampState::OffRequested, HeadlampState::Off) => Some(FrontHeadlampSwitchDirection::Off),
         _ => None,
     }
 }

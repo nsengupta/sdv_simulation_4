@@ -1,4 +1,7 @@
-//! Powertrain assembly: wheel RPM input and derived ground speed.
+//! Powertrain zone (L1): alphabet + context + behavior.
+//!
+//! **ADR-5:** [`PowertrainState`] (same shape as [`PowertrainContext`] today),
+//! [`PowertrainMessage`], [`PowertrainOutcome`].
 //!
 //! Self-sufficient: it receives a bus RPM reading, derives speed (via
 //! [`crate::vehicle_physics::kinematics`]), and exposes raw + derived values and a local
@@ -7,6 +10,22 @@
 
 use crate::vehicle_physics::constants::{operational_warning_active, RPM_IDLE, RPM_REDLINE_THRESHOLD};
 use crate::vehicle_physics::kinematics::calculate_speed_from_rpm;
+
+/// L1 powertrain snapshot (wheel RPM + derived speed).
+pub type PowertrainState = PowertrainContext;
+
+/// Inputs — future child-actor mailbox vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowertrainMessage {
+    UpdateRpm(u16),
+}
+
+/// Zone-local egress; none in milestone 1 (operational FSM owns buzzer/sync).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowertrainOutcome {
+    #[doc(hidden)]
+    __NoEgress,
+}
 
 /// Per-wheel RPM. Today a single bus RPM is broadcast to all four wheels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

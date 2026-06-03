@@ -2,7 +2,7 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
-use crate::fsm::{FsmEvent, LightingState};
+use crate::fsm::{FsmEvent, HeadlampState};
 use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{
     expect_actuation_command, inject_matching_ack, inject_matching_nack, install_with_actuation,
@@ -162,7 +162,7 @@ async fn scenario_actuation_ack_round_trip_via_helper() {
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, LightingState::On);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::On);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }
 
@@ -246,6 +246,6 @@ async fn scenario_actuation_nack_round_trip_via_helper() {
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, LightingState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }

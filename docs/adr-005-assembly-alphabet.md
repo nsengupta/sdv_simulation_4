@@ -122,10 +122,11 @@ Health is unlikely to become a heavy child actor unless sensor logic grows mater
 
 - Inline headlamp calls from `fsm::step` with `DomainAction` out-param.
 - TangleGuard: one unique cycle `fsm → vehicle_state → fsm` (reported twice).
-- `LightingState` and related enums still defined under `fsm::machineries`.
+- ~~`LightingState` under `fsm::machineries`~~ — **done (milestone 1):** `HeadlampState` +
+  `{Zone}Message` / `{Zone}Outcome` in `vehicle_state/`; facade exports L1 headlamp state.
 
-**Do not** invest in `HeadlampEffect` → `DomainAction` bridge in this repo; zone alphabet +
-L4 demux in sim_3 supersedes it.
+**Do not** invest in `HeadlampEffect` → `DomainAction` bridge in this repo; L4 demux
+(milestone 2) supersedes it.
 
 ---
 

@@ -19,8 +19,8 @@ pub use crate::signals::VssSignal;
 // --- Read model (snapshots + observable assembly state) ---
 
 pub use crate::digital_twin::CarSnapshot;
-/// Lighting sub-state as exposed on [`CarSnapshot::context`]; not an FSM-internal import path.
-pub use crate::fsm::machineries::LightingState;
+/// Headlamp zone state on [`CarSnapshot::context`] (L1; ADR-5).
+pub use crate::vehicle_state::HeadlampState;
 
 // --- Observation / optional runtime wiring ---
 

@@ -1,8 +1,10 @@
-//! Health assembly: fuel, oil pressure, tyre status.
+//! Health zone (L1): state + derived predicate (ADR-5 H3 hybrid).
 //!
-//! No telemetry events feed it yet; it exposes the `is_healthy` predicate that
-//! gates `PowerOn` in the operational FSM. Step 2: becomes a health child actor
-//! (or stays a parent-owned struct, per the agreed topology).
+//! [`HealthMessage`] / ingress deferred until complexity budget allows.
+//! `is_healthy()` is derived over the aggregate, not headlamp-style outcomes.
+
+/// L1 health snapshot.
+pub type HealthState = VehicleHealthContext;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleHealthContext {

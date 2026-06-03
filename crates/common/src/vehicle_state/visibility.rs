@@ -1,9 +1,23 @@
-//! Visibility assembly: ambient light reading.
+//! Visibility zone (L1): alphabet + context.
 //!
-//! Self-sufficient store of the latest ambient lux. The headlamp assembly owns
-//! the lux→request hysteresis (it pairs the reading with lighting state), so
-//! this assembly only ingests and holds the value. Step 2: feeds the headlamp
-//! actor.
+//! Dumb lux store; headlamp owns policy. **ADR-5:** [`VisibilityState`],
+//! [`VisibilityMessage`], [`VisibilityOutcome`].
+
+/// L1 visibility snapshot.
+pub type VisibilityState = VisibilityContext;
+
+/// Inputs — ambient telemetry (L4 may fan-out to headlamp as well).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibilityMessage {
+    AmbientLux(u16),
+}
+
+/// No zone-local egress in milestone 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibilityOutcome {
+    #[doc(hidden)]
+    __NoEgress,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct VisibilityContext {

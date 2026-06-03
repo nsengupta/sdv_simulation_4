@@ -20,12 +20,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::fsm::{
-    ActorModeHintFromDomain, DomainAction, FrontHeadlampIncompleteCause,
-    FrontHeadlampSwitchDirection, FsmEvent, FsmState, LightingState, RawTransitionRecord,
+    ActorModeHintFromDomain, DomainAction, FsmEvent, FsmState, RawTransitionRecord,
 };
 use crate::vehicle_state::{
-    HeadlampContext, PowertrainContext, VehicleContext, VehicleHealthContext, VisibilityContext,
-    WheelRpm,
+    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, HeadlampContext, HeadlampState,
+    PowertrainContext, VehicleContext, VehicleHealthContext, VisibilityContext, WheelRpm,
 };
 
 /// Per-session correlation between the monotonic clock and the wall clock.
@@ -65,20 +64,20 @@ impl SessionEpoch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PublishedLightingState {
+pub enum PublishedHeadlampState {
     Off,
     OnRequested,
     On,
     OffRequested,
 }
 
-impl From<&LightingState> for PublishedLightingState {
-    fn from(s: &LightingState) -> Self {
+impl From<&HeadlampState> for PublishedHeadlampState {
+    fn from(s: &HeadlampState) -> Self {
         match s {
-            LightingState::Off => Self::Off,
-            LightingState::OnRequested => Self::OnRequested,
-            LightingState::On => Self::On,
-            LightingState::OffRequested => Self::OffRequested,
+            HeadlampState::Off => Self::Off,
+            HeadlampState::OnRequested => Self::OnRequested,
+            HeadlampState::On => Self::On,
+            HeadlampState::OffRequested => Self::OffRequested,
         }
     }
 }
@@ -253,7 +252,7 @@ impl From<&VisibilityContext> for PublishedVisibilityContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishedHeadlampContext {
-    pub state: PublishedLightingState,
+    pub state: PublishedHeadlampState,
     /// The monotonic ACK-wait anchor projected to wall-clock placement, if pending.
     pub ack_pending_since_unix: Option<Duration>,
 }

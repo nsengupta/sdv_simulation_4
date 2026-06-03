@@ -1,20 +1,23 @@
-//! L1 vehicle state: per-assembly (zone) contexts and the aggregate [`VehicleContext`].
+//! L1 vehicle state: per-zone alphabet (ADR-5), contexts, and [`VehicleContext`].
 //!
-//! Each assembly owns its own data **and** the behavior over that data (receive,
-//! derive, expose). [`VehicleContext`] is only an aggregate of the assemblies.
-//!
-//! Independent of the FSM pattern — consumed by `fsm::step`, held by `DigitalTwinCar`.
-//! Step 2 groundwork for the zone-actor plan (ADR 0001).
+//! Each zone exposes `{Zone}State`, `{Zone}Message`, `{Zone}Outcome` where applicable.
+//! Zones import L0 only — no L2/L4. Consumed by `fsm::step` and held by `DigitalTwinCar`.
 
 pub mod front_headlamp;
 pub mod health;
 pub mod powertrain;
 pub mod visibility;
 
-pub use front_headlamp::HeadlampContext;
-pub use health::VehicleHealthContext;
-pub use powertrain::{PowertrainContext, PowertrainMode, WheelRpm};
-pub use visibility::VisibilityContext;
+pub use front_headlamp::{
+    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, HeadlampContext, HeadlampMessage,
+    HeadlampOutcome, HeadlampState,
+};
+pub use health::{HealthState, VehicleHealthContext};
+pub use powertrain::{
+    PowertrainContext, PowertrainMessage, PowertrainMode, PowertrainOutcome, PowertrainState,
+    WheelRpm,
+};
+pub use visibility::{VisibilityContext, VisibilityMessage, VisibilityOutcome, VisibilityState};
 
 /// Aggregate of all vehicle assemblies held by the digital twin.
 ///

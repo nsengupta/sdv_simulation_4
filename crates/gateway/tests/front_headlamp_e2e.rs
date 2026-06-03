@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use common::facade::{
-    FRONT_HEADLAMP_ON_ACK_WAIT, LightingState, PhysicalCarVocabulary, VehicleController,
+    FRONT_HEADLAMP_ON_ACK_WAIT, HeadlampState, PhysicalCarVocabulary, VehicleController,
     VehicleControllerRuntimeOptions, VssSignal,
 };
 
@@ -44,7 +44,7 @@ async fn controller_fsm_front_headlamp_ack_path() {
         .get_snapshot(Some(Duration::from_millis(300)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, LightingState::On);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::On);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }
 
@@ -76,7 +76,7 @@ async fn controller_fsm_front_headlamp_nack_path() {
         .get_snapshot(Some(Duration::from_millis(300)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, LightingState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }
 
@@ -109,6 +109,6 @@ async fn controller_fsm_front_headlamp_no_response_timeout_path() {
         .get_snapshot(Some(Duration::from_millis(300)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, LightingState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }

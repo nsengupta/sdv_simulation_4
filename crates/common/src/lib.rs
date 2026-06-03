@@ -55,7 +55,7 @@ pub use vehicle_physics::{
 pub use published::{
     PublishedDomainAction, PublishedFrontHeadlampIncompleteCause,
     PublishedFrontHeadlampSwitchDirection, PublishedFsmEvent, PublishedFsmState,
-    PublishedHeadlampContext, PublishedHealthContext, PublishedLightingState,
+    PublishedHeadlampContext, PublishedHeadlampState, PublishedHealthContext,
     PublishedPowertrainContext, PublishedTransitionRecord, PublishedVehicleContext,
     PublishedVisibilityContext, PublishedWheelRpm, SessionEpoch,
 };

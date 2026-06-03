@@ -2,7 +2,7 @@
 
 use crate::fsm::{
     step, FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, DomainAction, FsmEvent,
-    FsmState, LightingState,
+    FsmState, HeadlampState,
 };
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{
@@ -14,13 +14,13 @@ fn valid_twin_context() -> VehicleContext {
     VehicleContext::default()
 }
 
-fn ctx_with_headlamp_state(state: LightingState) -> VehicleContext {
+fn ctx_with_headlamp_state(state: HeadlampState) -> VehicleContext {
     let mut ctx = valid_twin_context();
     ctx.headlamp.state = state;
     ctx
 }
 
-fn ctx_with_pending_headlamp(state: LightingState, since: Instant, ambient_lux: u16) -> VehicleContext {
+fn ctx_with_pending_headlamp(state: HeadlampState, since: Instant, ambient_lux: u16) -> VehicleContext {
     let mut ctx = valid_twin_context();
     ctx.headlamp.state = state;
     ctx.headlamp.ack_pending_since = Some(since);
@@ -49,7 +49,7 @@ fn given_lights_off_when_lux_below_on_threshold_then_requests_front_headlamp_on(
 #[test]
 fn given_on_requested_when_ack_on_then_no_duplicate_on_request_emitted() {
     let current_state = FsmState::Idle;
-    let mut current_ctx = ctx_with_headlamp_state(LightingState::OnRequested);
+    let mut current_ctx = ctx_with_headlamp_state(HeadlampState::OnRequested);
     current_ctx.visibility.ambient_lux = 20;
 
     let result = step(
@@ -67,7 +67,7 @@ fn given_on_requested_when_ack_on_then_no_duplicate_on_request_emitted() {
 #[test]
 fn given_lights_on_when_lux_above_off_threshold_then_requests_front_headlamp_off() {
     let current_state = FsmState::Driving;
-    let mut current_ctx = ctx_with_headlamp_state(LightingState::On);
+    let mut current_ctx = ctx_with_headlamp_state(HeadlampState::On);
     current_ctx.visibility.ambient_lux = 50;
 
     let result = step(
@@ -94,7 +94,7 @@ fn given_lights_off_when_lux_at_on_threshold_then_requests_front_headlamp_on() {
     assert!(result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOn));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OnRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OnRequested);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_some());
 }
 
@@ -110,12 +110,12 @@ fn given_lights_off_when_lux_in_deadband_then_does_not_request_front_headlamp_on
     assert!(!result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOn));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
 }
 
 #[test]
 fn given_lights_on_when_lux_at_off_threshold_then_requests_front_headlamp_off() {
-    let current_ctx = ctx_with_headlamp_state(LightingState::On);
+    let current_ctx = ctx_with_headlamp_state(HeadlampState::On);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
@@ -126,13 +126,13 @@ fn given_lights_on_when_lux_at_off_threshold_then_requests_front_headlamp_off() 
     assert!(result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOff));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OffRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OffRequested);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_some());
 }
 
 #[test]
 fn given_lights_on_when_lux_in_deadband_then_does_not_request_front_headlamp_off() {
-    let current_ctx = ctx_with_headlamp_state(LightingState::On);
+    let current_ctx = ctx_with_headlamp_state(HeadlampState::On);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
@@ -143,12 +143,12 @@ fn given_lights_on_when_lux_in_deadband_then_does_not_request_front_headlamp_off
     assert!(!result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOff));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::On);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::On);
 }
 
 #[test]
 fn given_lights_on_requested_when_low_lux_arrives_then_does_not_emit_duplicate_on_request() {
-    let mut current_ctx = ctx_with_headlamp_state(LightingState::OnRequested);
+    let mut current_ctx = ctx_with_headlamp_state(HeadlampState::OnRequested);
     current_ctx.visibility.ambient_lux = 20;
     let result = step(
         &FsmState::Idle,
@@ -160,12 +160,12 @@ fn given_lights_on_requested_when_low_lux_arrives_then_does_not_emit_duplicate_o
     assert!(!result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOn));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OnRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OnRequested);
 }
 
 #[test]
 fn given_lights_off_requested_when_high_lux_arrives_then_does_not_emit_duplicate_off_request() {
-    let mut current_ctx = ctx_with_headlamp_state(LightingState::OffRequested);
+    let mut current_ctx = ctx_with_headlamp_state(HeadlampState::OffRequested);
     current_ctx.visibility.ambient_lux = 50;
     let result = step(
         &FsmState::Driving,
@@ -177,32 +177,32 @@ fn given_lights_off_requested_when_high_lux_arrives_then_does_not_emit_duplicate
     assert!(!result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOff));
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OffRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OffRequested);
 }
 
 #[test]
 fn given_on_requested_when_ack_on_then_transitions_to_on() {
-    let current_ctx = ctx_with_headlamp_state(LightingState::OnRequested);
+    let current_ctx = ctx_with_headlamp_state(HeadlampState::OnRequested);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::FrontHeadlampOnAck,
         Instant::now(),
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::On);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::On);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
 }
 
 #[test]
 fn given_off_requested_when_ack_off_then_transitions_to_off() {
-    let current_ctx = ctx_with_headlamp_state(LightingState::OffRequested);
+    let current_ctx = ctx_with_headlamp_state(HeadlampState::OffRequested);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::FrontHeadlampOffAck,
         Instant::now(),
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
 }
 
@@ -210,14 +210,14 @@ fn given_off_requested_when_ack_off_then_transitions_to_off() {
 #[test]
 fn given_on_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 20);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 20);
     let result = step(
         &FsmState::Idle,
         &current_ctx,
         &FsmEvent::TimerTick,
         t0 + FRONT_HEADLAMP_ON_ACK_WAIT / 2,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OnRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OnRequested);
     assert!(!result
         .actions
         .iter()
@@ -228,14 +228,14 @@ fn given_on_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
 #[test]
 fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OffRequested, t0, 50);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OffRequested, t0, 50);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::TimerTick,
         t0 + FRONT_HEADLAMP_OFF_ACK_WAIT / 2,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OffRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OffRequested);
     assert!(!result
         .actions
         .iter()
@@ -246,14 +246,14 @@ fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() 
 #[test]
 fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 20);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 20);
     let result = step(
         &FsmState::Idle,
         &current_ctx,
         &FsmEvent::TimerTick,
         t0 + FRONT_HEADLAMP_ON_ACK_WAIT,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert!(result.actions.iter().any(|a| matches!(
         a,
@@ -265,14 +265,14 @@ fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() 
 #[test]
 fn given_off_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_on() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OffRequested, t0, 50);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OffRequested, t0, 50);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
         &FsmEvent::TimerTick,
         t0 + FRONT_HEADLAMP_OFF_ACK_WAIT,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::On);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::On);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert!(result.actions.iter().any(|a| matches!(
         a,
@@ -284,7 +284,7 @@ fn given_off_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_on() 
 #[test]
 fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
     let t0 = Instant::now();
-    let ctx_pending = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 20);
+    let ctx_pending = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 20);
     let deadline = t0 + FRONT_HEADLAMP_ON_ACK_WAIT;
     let after_timeout = step(
         &FsmState::Idle,
@@ -292,7 +292,7 @@ fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         &FsmEvent::TimerTick,
         deadline,
     );
-    assert_eq!(after_timeout.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(after_timeout.modified_ctx.headlamp.state, HeadlampState::Off);
     assert_eq!(
         after_timeout
             .actions
@@ -318,7 +318,7 @@ fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
 #[test]
 fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
     let t0 = Instant::now();
-    let ctx_pending = ctx_with_pending_headlamp(LightingState::OffRequested, t0, 50);
+    let ctx_pending = ctx_with_pending_headlamp(HeadlampState::OffRequested, t0, 50);
     let deadline = t0 + FRONT_HEADLAMP_OFF_ACK_WAIT;
     let after_timeout = step(
         &FsmState::Driving,
@@ -326,7 +326,7 @@ fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         &FsmEvent::TimerTick,
         deadline,
     );
-    assert_eq!(after_timeout.modified_ctx.headlamp.state, LightingState::On);
+    assert_eq!(after_timeout.modified_ctx.headlamp.state, HeadlampState::On);
     assert_eq!(
         after_timeout
             .actions
@@ -351,7 +351,7 @@ fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
 #[test]
 fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 100);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 100);
     let result = step(
         &FsmState::Idle,
         &current_ctx,
@@ -361,7 +361,7 @@ fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() 
         },
         t0,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert_eq!(
         result
@@ -380,7 +380,7 @@ fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() 
 #[test]
 fn given_off_requested_when_actuation_incomplete_timed_out_then_recover_to_on() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OffRequested, t0, 50);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OffRequested, t0, 50);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
@@ -390,7 +390,7 @@ fn given_off_requested_when_actuation_incomplete_timed_out_then_recover_to_on() 
         },
         t0,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::On);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::On);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert_eq!(
         result
@@ -409,7 +409,7 @@ fn given_off_requested_when_actuation_incomplete_timed_out_then_recover_to_on() 
 #[test]
 fn given_on_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 20);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 20);
     let result = step(
         &FsmState::Idle,
         &current_ctx,
@@ -419,7 +419,7 @@ fn given_on_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
         },
         t0,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OnRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OnRequested);
     assert_eq!(result.modified_ctx.headlamp.ack_pending_since, Some(t0));
     assert!(!result
         .actions
@@ -430,7 +430,7 @@ fn given_on_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
 #[test]
 fn given_off_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OffRequested, t0, 50);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OffRequested, t0, 50);
     let result = step(
         &FsmState::Driving,
         &current_ctx,
@@ -440,7 +440,7 @@ fn given_off_requested_when_actuation_incomplete_wrong_direction_then_no_op() {
         },
         t0,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::OffRequested);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OffRequested);
     assert_eq!(result.modified_ctx.headlamp.ack_pending_since, Some(t0));
     assert!(!result
         .actions
@@ -459,7 +459,7 @@ fn given_lights_off_when_actuation_incomplete_on_then_no_recovery() {
         },
         Instant::now(),
     );
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     assert!(!result
         .actions
         .iter()
@@ -469,7 +469,7 @@ fn given_lights_off_when_actuation_incomplete_on_then_no_recovery() {
 #[test]
 fn given_idle_on_requested_when_power_off_then_primary_off_and_lighting_cleared() {
     let t0 = Instant::now();
-    let current_ctx = ctx_with_pending_headlamp(LightingState::OnRequested, t0, 100);
+    let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 100);
     let result = step(
         &FsmState::Idle,
         &current_ctx,
@@ -477,6 +477,6 @@ fn given_idle_on_requested_when_power_off_then_primary_off_and_lighting_cleared(
         t0,
     );
     assert_eq!(result.next_state, FsmState::Off);
-    assert_eq!(result.modified_ctx.headlamp.state, LightingState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
 }
