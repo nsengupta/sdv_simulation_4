@@ -35,8 +35,12 @@ behaviour — zone assemblies, transition ledger, diagnostics, correct-by-constr
 **Active on `main` (pyramid track):** restructure `common` into L0–L6 layers (`vehicle_physics`,
 `vehicle_state`, `fsm`, `digital_twin`, `twin_runtime`, …), eliminate module back-edges,
 then L1 assembly alphabets + L4 demux per
-[`docs/adr-005-assembly-alphabet.md`](docs/adr-005-assembly-alphabet.md). Design map:
-[`docs/design-notes-pyramid-layers.md`](docs/design-notes-pyramid-layers.md).
+[`docs/adr-005-assembly-alphabet.md`](docs/adr-005-assembly-alphabet.md). Target twin brain /
+ingress / power coordination:
+[`docs/adr-006-twin-brain-ingress-coordination.md`](docs/adr-006-twin-brain-ingress-coordination.md).
+Layer map: [`docs/design-notes-pyramid-layers.md`](docs/design-notes-pyramid-layers.md).
+
+**ADR series (architecture):** `docs/adr-005-*.md` (L1 alphabets) → `docs/adr-006-*.md` (brain & ingress).
 
 **After pyramid cleanup (~zero cycles):** per-zone **child actors** and runtime WIs (ledger actor,
 correlation, actuation child, …) — blog **Iteration 3** narrative; work stays in this repo,

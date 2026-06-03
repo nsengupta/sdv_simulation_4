@@ -5,7 +5,7 @@
 
 **Origin:** static analysis reported module cycles in `common` (`fsm ↔ engine`, `digital_twin → fsm → engine → digital_twin`, etc.). Those cycles were the **smell** that started this layering exercise — not an acceptable end state. Phase A tolerates them temporarily; **Phase B must eliminate them** (see [Packaging plan](#packaging-plan-agreed-2026-06-01)).
 
-**Assembly alphabets (ADR-5):** each L1 zone owns `{Zone}State`, `{Zone}Message`, `{Zone}Outcome`; L4 demux translates. Design locked in [`adr-005-assembly-alphabet.md`](adr-005-assembly-alphabet.md). One known Step 1 cycle remains; **prevent new cycles** in every milestone (low coupling, high cohesion); TangleGuard at milestone completion — see ADR-5 layering discipline.
+**Assembly alphabets (ADR-5):** each L1 zone owns `{Zone}State`, `{Zone}Message`, `{Zone}Outcome`; L4 demux translates. Design locked in [`adr-005-assembly-alphabet.md`](adr-005-assembly-alphabet.md). **Target brain / ingress (ADR-6):** controller → brain only, `TwinIngress`, power barrier — [`adr-006-twin-brain-ingress-coordination.md`](adr-006-twin-brain-ingress-coordination.md). One known Step 1 cycle remains; **prevent new cycles** in every milestone; TangleGuard at milestone completion — see ADR-5 layering discipline.
 
 ---
 

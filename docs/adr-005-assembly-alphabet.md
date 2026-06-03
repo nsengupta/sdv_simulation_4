@@ -2,7 +2,7 @@
 
 **Status:** `ACCEPTED` (design locked; implementation deferred)  
 **Date:** 2026-06-01  
-**Related:** `docs/design-notes-pyramid-layers.md`, ADR-3/4 in `docs/design-notes-runtime-observation.md`
+**Related:** `docs/design-notes-pyramid-layers.md`, ADR-3/4 in `docs/design-notes-runtime-observation.md`, [`adr-006-twin-brain-ingress-coordination.md`](adr-006-twin-brain-ingress-coordination.md) (target brain / ingress / power barrier)
 
 ---
 
