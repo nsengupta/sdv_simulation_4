@@ -8,7 +8,9 @@
 
 use async_trait::async_trait;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::diagnostic::{DiagnosticMessage, DiagnosticSink, TokioMpscDiagnosticSink, diag_front_headlamp_confirmed, diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_warning, diag_transition_sink_full, diag_transition_sink_closed};
 use crate::digital_twin::{CarSnapshot, DigitalTwinCar, DigitalTwinCarVocabulary};
@@ -18,11 +20,12 @@ use crate::twin_runtime::controller::actuation_manager::{
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{
     self, ActorModeHintFromDomain, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState,
-    HeadlampState,
+    HeadlampState, StepResult,
 };
-use crate::twin_runtime::headlamp_actor::{HeadlampActor, HeadlampActorVocabulary};
-use crate::twin_runtime::brain_twin_turn;
-use crate::vehicle_state::VehicleContext;
+use crate::twin_runtime::headlamp_actor::{tell_headlamp_zone, HeadlampActor, HeadlampActorVocabulary};
+use crate::twin_runtime::twin_turn::{commit_brain_turn, fsm_step_lands_off};
+use crate::twin_runtime::zone_turn::fsm_event_headlamp_message;
+use crate::vehicle_state::{HeadlampMessage, HeadlampZoneReply, VehicleContext};
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
 use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
 
@@ -50,9 +53,30 @@ impl From<&str> for VirtualCarActorArgs {
     }
 }
 
+/// One FSM event awaiting headlamp tell-back(s) before [`commit_brain_turn`].
+#[derive(Debug, Clone)]
+enum PendingBrainTurn {
+    /// Event's primary zone message was told; waiting for embed.
+    PrimaryHeadlamp {
+        turn_id: u64,
+        event: FsmEvent,
+        now: Instant,
+    },
+    /// Primary embed received (or skipped); waiting for ignition-off reset tell-back.
+    IgnitionOffReset {
+        turn_id: u64,
+        event: FsmEvent,
+        now: Instant,
+        headlamp_reply: Option<HeadlampZoneReply>,
+    },
+}
+
 pub struct VirtualCarRuntimeState {
     twin_car: DigitalTwinCar,
     headlamp_actor: ActorRef<HeadlampActorVocabulary>,
+    next_turn_id: u64,
+    pending_turn: Option<PendingBrainTurn>,
+    fsm_backlog: VecDeque<(FsmEvent, Instant)>,
     next_record_seq: u64,
     /// Monotonic↔wall anchor for this run; the sole source of wall-clock stamps on published
     /// records and of the actuation `session_id`.
@@ -142,6 +166,9 @@ impl Actor for VirtualCarActor {
         Ok(VirtualCarRuntimeState {
             twin_car: DigitalTwinCar::new(identity, FsmState::Off, initial_ctx)?,
             headlamp_actor,
+            next_turn_id: 1,
+            pending_turn: None,
+            fsm_backlog: VecDeque::new(),
             next_record_seq: 1,
             session_epoch,
             runtime_options: args.runtime_options,
@@ -153,11 +180,11 @@ impl Actor for VirtualCarActor {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         runtime_state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        use DigitalTwinCarVocabulary::{Fsm, GetStatus};
+        use DigitalTwinCarVocabulary::{Fsm, GetStatus, HeadlampZoneReady};
 
         match message {
             Fsm(evt) => {
@@ -167,99 +194,17 @@ impl Actor for VirtualCarActor {
                         let _ = sink.try_emit(diag_timer_tick(runtime_state.twin_car.identity()));
                     }
                 }
-                let now = std::time::Instant::now();
-                let result = brain_twin_turn(
-                    &runtime_state.headlamp_actor,
-                    runtime_state.twin_car.current_state(),
-                    runtime_state.twin_car.context(),
-                    &evt,
-                    now,
-                )
-                .await?;
-                let old_state = runtime_state.twin_car.current_state().clone();
-                // Capture pre/post headlamp state so a positive ACK that settles
-                // `*Requested → On/Off` can be surfaced on the diagnostic stream (success was
-                // previously silent there, though always recorded in the transition ledger).
-                let headlamp_before = runtime_state.twin_car.context().headlamp.state;
-                let headlamp_after = result.modified_ctx.headlamp.state;
-                let mut mode = ActorMode::Normal;
-
-                // Counter A (WI-4): assign this applied event its ledger sequence here — once per
-                // FSM event, *regardless* of whether a transition sink is wired. This keeps the
-                // `as_of_seq` stamp on `GetStatus` snapshots meaningful even when only a diagnostic
-                // sink (or no sink) is attached. The same sequence is handed to the published
-                // record so a snapshot and the ledger reconcile on a single counter.
-                let record_seq = runtime_state.next_record_seq;
-                runtime_state.next_record_seq = runtime_state.next_record_seq.saturating_add(1);
-
-                // Persist actor state first (non-negotiable ordering before transition log emit).
-                // `apply_step` is the sole mutation path (Q9 / ADR-3).
-                runtime_state.twin_car.apply_step(result.next_state.clone(), result.modified_ctx);
-
-                Self::try_emit_transition_record(runtime_state, record_seq, result.transition_record);
-
-                for action in result.actions {
-                    match action {
-                        DomainAction::EnterMode(hint) => {
-                            mode = match hint {
-                                ActorModeHintFromDomain::Normal => ActorMode::Normal,
-                                ActorModeHintFromDomain::Transitioning => ActorMode::Transitioning,
-                            };
-                        }
-                        // LogWarning is observability, not actuation (WI-5 / Q5): route it to
-                        // the diagnostic sink instead of the actuation manager.
-                        DomainAction::LogWarning(message) => {
-                            if let Some(sink) = &runtime_state.diagnostic_sink {
-                                let _ = sink.try_emit(diag_warning(
-                                    runtime_state.twin_car.identity(),
-                                    &message,
-                                ));
-                            }
-                        }
-                        other_action => {
-                            if let Err(err) = runtime_state
-                                .actuation_manager
-                                .execute(&other_action, &runtime_state.twin_car)
-                                .await
-                            {
-                                if let Some(sink) = &runtime_state.diagnostic_sink {
-                                    let _ = sink.try_emit(diag_actuation_failure(
-                                        runtime_state.twin_car.identity(),
-                                        &format!("{:?}", other_action),
-                                        &format!("{:?}", err),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                let now = Instant::now();
+                if runtime_state.pending_turn.is_some() {
+                    runtime_state.fsm_backlog.push_back((evt, now));
+                    return Ok(());
                 }
-
-                if *runtime_state.twin_car.current_state() != old_state {
-                    if let Some(sink) = &runtime_state.diagnostic_sink {
-                        let _ = sink.try_emit(diag_state_transition(
-                            runtime_state.twin_car.identity(),
-                            runtime_state.twin_car.current_state(),
-                            runtime_state.twin_car.context(),
-                        ));
-                    }
-                }
-
-                // Surface a positive headlamp ACK (settle `*Requested → On/Off`) on the
-                // diagnostic stream, symmetric with the NACK/timeout warning path.
-                if let Some(direction) =
-                    front_headlamp_confirmed_direction(headlamp_before, headlamp_after)
-                {
-                    if let Some(sink) = &runtime_state.diagnostic_sink {
-                        let _ = sink.try_emit(diag_front_headlamp_confirmed(
-                            runtime_state.twin_car.identity(),
-                            direction,
-                        ));
-                    }
-                }
-                // `mode` is reserved for future actor behaviour (e.g. pacing or backpressure
-                // hints once child actors exist); not wired yet.
-                let _ = mode;
-                Ok(())
+                Self::begin_fsm_turn(&myself, runtime_state, evt, now).await?;
+                Self::pump_fsm_backlog(&myself, runtime_state).await
+            }
+            HeadlampZoneReady { turn_id, reply } => {
+                Self::on_headlamp_zone_ready(&myself, runtime_state, turn_id, reply).await?;
+                Self::pump_fsm_backlog(&myself, runtime_state).await
             }
             GetStatus(reply) => Self::reply_get_status(
                 reply,
@@ -282,23 +227,228 @@ impl Actor for VirtualCarActor {
     }
 }
 
-/// Classify a headlamp state change as a positive ACK settle, if any.
-///
-/// `On` is only reachable via an ON-ack and `Off` (from `OffRequested`) only via an OFF-ack; a
-/// *failed* OFF recovers to `On` and a failed ON recovers to `Off`, so matching the exact
-/// `*Requested → settled` pair flags success only (no false positives from recovery).
-fn front_headlamp_confirmed_direction(
-    before: HeadlampState,
-    after: HeadlampState,
-) -> Option<FrontHeadlampSwitchDirection> {
-    match (before, after) {
-        (HeadlampState::OnRequested, HeadlampState::On) => Some(FrontHeadlampSwitchDirection::On),
-        (HeadlampState::OffRequested, HeadlampState::Off) => Some(FrontHeadlampSwitchDirection::Off),
-        _ => None,
-    }
-}
-
 impl VirtualCarActor {
+    async fn begin_fsm_turn(
+        brain: &ActorRef<DigitalTwinCarVocabulary>,
+        runtime_state: &mut VirtualCarRuntimeState,
+        event: FsmEvent,
+        now: Instant,
+    ) -> Result<(), ActorProcessingErr> {
+        let turn_id = runtime_state.next_turn_id;
+        runtime_state.next_turn_id = runtime_state.next_turn_id.saturating_add(1);
+
+        if let Some(message) = fsm_event_headlamp_message(&event) {
+            tell_headlamp_zone(
+                &runtime_state.headlamp_actor,
+                &brain,
+                turn_id,
+                message,
+                now,
+            )?;
+            runtime_state.pending_turn = Some(PendingBrainTurn::PrimaryHeadlamp {
+                turn_id,
+                event,
+                now,
+            });
+            return Ok(());
+        }
+
+        if fsm_step_lands_off(
+            runtime_state.twin_car.current_state(),
+            runtime_state.twin_car.context(),
+            &event,
+            now,
+            None,
+        ) {
+            tell_headlamp_zone(
+                &runtime_state.headlamp_actor,
+                &brain,
+                turn_id,
+                HeadlampMessage::ResetForIgnitionOff,
+                now,
+            )?;
+            runtime_state.pending_turn = Some(PendingBrainTurn::IgnitionOffReset {
+                turn_id,
+                event,
+                now,
+                headlamp_reply: None,
+            });
+            return Ok(());
+        }
+
+        let result = commit_brain_turn(
+            runtime_state.twin_car.current_state(),
+            runtime_state.twin_car.context(),
+            &event,
+            now,
+            None,
+            None,
+        );
+        Self::apply_committed_turn(runtime_state, &event, result).await
+    }
+
+    async fn on_headlamp_zone_ready(
+        brain: &ActorRef<DigitalTwinCarVocabulary>,
+        runtime_state: &mut VirtualCarRuntimeState,
+        turn_id: u64,
+        reply: HeadlampZoneReply,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(pending) = runtime_state.pending_turn.take() else {
+            return Ok(());
+        };
+
+        match pending {
+            PendingBrainTurn::PrimaryHeadlamp {
+                turn_id: expected,
+                event,
+                now,
+            } if expected == turn_id => {
+                if fsm_step_lands_off(
+                    runtime_state.twin_car.current_state(),
+                    runtime_state.twin_car.context(),
+                    &event,
+                    now,
+                    Some(&reply),
+                ) {
+                    tell_headlamp_zone(
+                        &runtime_state.headlamp_actor,
+                        &brain,
+                        turn_id,
+                        HeadlampMessage::ResetForIgnitionOff,
+                        now,
+                    )?;
+                    runtime_state.pending_turn = Some(PendingBrainTurn::IgnitionOffReset {
+                        turn_id,
+                        event,
+                        now,
+                        headlamp_reply: Some(reply),
+                    });
+                    return Ok(());
+                }
+                let result = commit_brain_turn(
+                    runtime_state.twin_car.current_state(),
+                    runtime_state.twin_car.context(),
+                    &event,
+                    now,
+                    Some(reply),
+                    None,
+                );
+                Self::apply_committed_turn(runtime_state, &event, result).await?;
+            }
+            PendingBrainTurn::IgnitionOffReset {
+                turn_id: expected,
+                event,
+                now,
+                headlamp_reply,
+            } if expected == turn_id => {
+                let result = commit_brain_turn(
+                    runtime_state.twin_car.current_state(),
+                    runtime_state.twin_car.context(),
+                    &event,
+                    now,
+                    headlamp_reply,
+                    Some(reply),
+                );
+                Self::apply_committed_turn(runtime_state, &event, result).await?;
+            }
+            other => {
+                runtime_state.pending_turn = Some(other);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn pump_fsm_backlog(
+        brain: &ActorRef<DigitalTwinCarVocabulary>,
+        runtime_state: &mut VirtualCarRuntimeState,
+    ) -> Result<(), ActorProcessingErr> {
+        while runtime_state.pending_turn.is_none() {
+            let Some((evt, now)) = runtime_state.fsm_backlog.pop_front() else {
+                break;
+            };
+            Self::begin_fsm_turn(brain, runtime_state, evt, now).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_committed_turn(
+        runtime_state: &mut VirtualCarRuntimeState,
+        event: &FsmEvent,
+        result: StepResult,
+    ) -> Result<(), ActorProcessingErr> {
+        let old_state = runtime_state.twin_car.current_state().clone();
+        let headlamp_before = runtime_state.twin_car.context().headlamp.state;
+        let headlamp_after = result.modified_ctx.headlamp.state;
+        let mut mode = ActorMode::Normal;
+
+        let record_seq = runtime_state.next_record_seq;
+        runtime_state.next_record_seq = runtime_state.next_record_seq.saturating_add(1);
+
+        runtime_state.twin_car.apply_step(result.next_state.clone(), result.modified_ctx);
+
+        Self::try_emit_transition_record(runtime_state, record_seq, result.transition_record);
+
+        for action in result.actions {
+            match action {
+                DomainAction::EnterMode(hint) => {
+                    mode = match hint {
+                        ActorModeHintFromDomain::Normal => ActorMode::Normal,
+                        ActorModeHintFromDomain::Transitioning => ActorMode::Transitioning,
+                    };
+                }
+                DomainAction::LogWarning(message) => {
+                    if let Some(sink) = &runtime_state.diagnostic_sink {
+                        let _ = sink.try_emit(diag_warning(
+                            runtime_state.twin_car.identity(),
+                            &message,
+                        ));
+                    }
+                }
+                other_action => {
+                    if let Err(err) = runtime_state
+                        .actuation_manager
+                        .execute(&other_action, &runtime_state.twin_car)
+                        .await
+                    {
+                        if let Some(sink) = &runtime_state.diagnostic_sink {
+                            let _ = sink.try_emit(diag_actuation_failure(
+                                runtime_state.twin_car.identity(),
+                                &format!("{:?}", other_action),
+                                &format!("{:?}", err),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if *runtime_state.twin_car.current_state() != old_state {
+            if let Some(sink) = &runtime_state.diagnostic_sink {
+                let _ = sink.try_emit(diag_state_transition(
+                    runtime_state.twin_car.identity(),
+                    runtime_state.twin_car.current_state(),
+                    runtime_state.twin_car.context(),
+                ));
+            }
+        }
+
+        if let Some(direction) =
+            front_headlamp_confirmed_direction(headlamp_before, headlamp_after)
+        {
+            if let Some(sink) = &runtime_state.diagnostic_sink {
+                let _ = sink.try_emit(diag_front_headlamp_confirmed(
+                    runtime_state.twin_car.identity(),
+                    direction,
+                ));
+            }
+        }
+
+        let _ = mode;
+        let _ = event;
+        Ok(())
+    }
+
     fn try_emit_transition_record(
         runtime_state: &mut VirtualCarRuntimeState,
         record_seq: u64,
@@ -308,7 +458,6 @@ impl VirtualCarActor {
             return;
         };
 
-        // Project the pure (Instant-bearing) record into its serializable, wall-stamped form.
         let published = PublishedTransitionRecord::project(
             &transition_record,
             runtime_state.twin_car.identity(),
@@ -345,5 +494,17 @@ impl VirtualCarActor {
             .send(CarSnapshot::new(twin_car.clone(), as_of_seq))
             .map_err(|e| std::io::Error::other(format!("GetStatus reply: {e:?}")))?;
         Ok(())
+    }
+}
+
+/// Classify a headlamp state change as a positive ACK settle, if any.
+fn front_headlamp_confirmed_direction(
+    before: HeadlampState,
+    after: HeadlampState,
+) -> Option<FrontHeadlampSwitchDirection> {
+    match (before, after) {
+        (HeadlampState::OnRequested, HeadlampState::On) => Some(FrontHeadlampSwitchDirection::On),
+        (HeadlampState::OffRequested, HeadlampState::Off) => Some(FrontHeadlampSwitchDirection::Off),
+        _ => None,
     }
 }

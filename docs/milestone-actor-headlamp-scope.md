@@ -14,7 +14,7 @@ Use this file to resume work in a new chat: `@docs/milestone-actor-headlamp-scop
 - **ADR-5 M1:** L1 alphabets (`HeadlampState` / `Message` / `Outcome`; other zones stubbed)
 - **ADR-5 M2:** `zone_turn` → slim `fsm::step` → `twin_turn`; L1 emits **`HeadlampOutcome`** only
 - **ADR-6:** target brain / ingress / power coordination — **documented**, not implemented
-- **Deferred:** `sdv_core` crate split; full `TwinIngress`; power barrier; ledger `applied`; offline replay tool
+- **Deferred:** `sdv_core` crate split; full `TwinIngress`; power barrier; ledger `applied`; offline replay tool — see ADR-6 [Ledger tool / shutdown observability](adr-006-twin-brain-ingress-coordination.md#ledger-tool--shutdown-observability) (`applied: false` rows during `PowerOff`, not silent backlog)
 
 ---
 
@@ -31,9 +31,9 @@ Turn the **headlamp zone** from in-process `HeadlampContext` + parent `zone_turn
 | **`HeadlampZoneReply`** | Zone twinlet reply after **one** [`HeadlampMessage`] — `{ ctx, outcomes }`. Not a brain/FSM *turn*. |
 | **`HeadlampOutcome`** | Zone egress only (RequestOn, LogWarning, …) — L4 maps to `DomainAction`. |
 | **`HeadlampContext::on_receiving_message`** | L1 pure handler → `HeadlampZoneReply` (pattern for all zones). |
-| **`apply_headlamp_zone`** | **Interim:** **send** (sync `call`). **Replace** with **tell** + twinlet **tell** back. |
-| **`HeadlampActorVocabulary`** | Interim send envelope; becomes tell payload (+ tell-back to brain). |
-| **`brain_twin_turn`** | Interim; remove when tell/reply gate lands. |
+| **`tell_headlamp_zone`** | Brain **tell** to twinlet (`send_message`, no reply port). |
+| **`HeadlampActorVocabulary`** | Tell payload: message, `turn_id`, brain `ActorRef`. |
+| **`DigitalTwinCarVocabulary::HeadlampZoneReady`** | Twinlet tell-back; brain then [`commit_brain_turn`]. |
 
 Avoid `*Turn` for zone replies — reserved for brain/FSM (`twin_turn`, `brain_twin_turn`).
 
@@ -110,7 +110,7 @@ Gateway e2e (Phase B) — deferred; will fail if snapshot fields shrink without 
 
 ---
 
-## Gate before more twinlets (next slice — sort this first)
+## Gate before more twinlets (step 6 — done)
 
 **Vocabulary (author / team):**
 
@@ -121,13 +121,13 @@ Gateway e2e (Phase B) — deferred; will fail if snapshot fields shrink without 
 
 (ractor: **tell** ≈ `cast` / mailbox put without reply port; **send** ≈ `call` + `RpcReplyPort`.)
 
-**Problem today:** [`apply_headlamp_zone`](crates/common/src/twin_runtime/headlamp_actor.rs) is **send** (ractor `call`) — brain `handle` **waits** for the twinlet inside one `Fsm` message. Brain mailbox is single-threaded: ingress and `GetStatus` queue behind that wait.
+**Was (pre–step 6):** sync **send** (`call`) — brain `handle` blocked until headlamp replied.
 
-| Today | Target |
-| ----- | ------ |
-| Brain **sends** to twinlet (waits in `handle`) | Brain **tells** twinlet (fire-and-forget) |
-| Reply in same `handle` stack | Twinlet **tells** brain back (separate brain mailbox message) |
-| One brain message = full turn | Two brain messages: tell out → tell back → then `apply_step` / ledger |
+| Was | Now (step 6) |
+| --- | ------------ |
+| Brain **send** / `call` | Brain **tell** via [`tell_headlamp_zone`](crates/common/src/twin_runtime/headlamp_actor.rs) |
+| Reply in same `handle` | Twinlet **tell** [`HeadlampZoneReady`](crates/common/src/digital_twin/mod.rs) |
+| One brain message = full turn | Tell out → tell back → `commit_brain_turn` / ledger |
 
 **Target flow (one zone message):**
 
@@ -143,26 +143,33 @@ Brain:      merge reply → apply_step → ledger → actuation / diagnostics
 
 **Still one apply per message** in the twinlet; only **coupling** changes (no RPC hold on brain mailbox).
 
-**Do not add** powertrain / visibility / health twinlets until this gate is done on headlamp (replace `brain_twin_turn` / `apply_headlamp_zone` `call` path). Then copy the tell/reply pattern.
+**Do not add** other zone twinlets until this pattern is copied from headlamp. **Next:** ADR-6 power barrier (not step 6 `fsm_backlog` — see shutdown observability below).
 
-**Open design (when implementing):** `turn_id` / correlation for out-of-order replies; whether controller `Fsm` waits for brain completion or brain buffers pending ingress (ADR-6 M4).
+**Open design (when implementing):** `turn_id` / correlation for out-of-order replies; ADR-6 M4 replaces step-6 `fsm_backlog` with power barrier + ledger-suppressed ingress (see ADR-6 shutdown observability).
+
+---
+
+## Shutdown observability (target — ADR-6)
+
+During **`PowerOff` coordination**, stray ingress must still appear in the **ledger** with
+`applied: false` so an offline tool can report (1) time from `PowerOff` to full shutdown and
+(2) which messages arrived meanwhile. Step 6 **`fsm_backlog`** is interim only (no row until
+commit). Full spec: [`adr-006` § Ledger tool / shutdown observability](adr-006-twin-brain-ingress-coordination.md#ledger-tool--shutdown-observability).
 
 ---
 
 ## In scope / out of scope
 
-**In (this branch):** headlamp actor, sync RPC brain dispatch, embed from `HeadlampZoneReply`, tests, README.  
-**Next slice:** tell/reply gate above.  
-**Out:** other zone actors (until gate), ADR-6 power barrier, `TwinIngress` on controller, `sdv_core` split, actuation child.
+**In (this branch):** headlamp actor, tell/tell-back, embed from `HeadlampZoneReply`, tests, README.  
+**Out:** other zone actors until headlamp pattern is stable; ADR-6 power barrier + `applied` ledger; `TwinIngress` on controller; `sdv_core` split; actuation child; M5 observability tool implementation.
 
 ---
 
 ## Architecture
 
 ```text
-Controller → VirtualCarActor (brain)
-Brain → apply_headlamp_zone (HeadlampActorVocabulary) → HeadlampActor
-Child → HeadlampZoneReply → brain → actuation / diagnostics / apply_step
+Controller → VirtualCarActor (brain): Fsm(…)
+Brain → tell HeadlampActor → HeadlampZoneReady → commit_brain_turn → apply_step / ledger
 ```
 
 ---
@@ -194,10 +201,10 @@ Child → HeadlampZoneReply → brain → actuation / diagnostics / apply_step
 | ---- | ------ | ----- |
 | 1 `on_receiving_message` | done | `HeadlampZoneReply` |
 | 2 `HeadlampActor` | done | `apply_headlamp_zone` / vocabulary struct |
-| 3 Brain dispatch | done | `brain_twin_turn` |
+| 3 Brain dispatch | done | `commit_brain_turn` (was sync `brain_twin_turn`) |
 | 4 Ledger/reply tests | done | `headlamp_reply_contract.rs` |
 | 5 README | done | `e18fd35` — first zone actorification slice |
-| 6 Tell / tell-back (no send/wait) | **next** | Gate before other twinlets |
+| 6 Tell / tell-back (no send/wait) | done | `tell_headlamp_zone`, `HeadlampZoneReady`, backlog |
 | 7 Operational policy on tell-back | after 6 | e.g. DrivingDangerously until corrective action |
 
 ---

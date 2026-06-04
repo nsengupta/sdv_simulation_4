@@ -16,6 +16,25 @@ use common::facade::{
     VehicleControllerRuntimeOptions, VssSignal,
 };
 
+async fn wait_headlamp_state(
+    controller: &VehicleController,
+    expected: HeadlampState,
+    timeout: Duration,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(snapshot) = controller.get_snapshot(Some(Duration::from_millis(50))).await {
+            if snapshot.context().headlamp.state == expected {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out after {timeout:?} waiting for headlamp {expected:?}");
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn controller_fsm_front_headlamp_ack_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
@@ -39,6 +58,7 @@ async fn controller_fsm_front_headlamp_ack_path() {
         })
         .await
         .expect("ack confirm event");
+    wait_headlamp_state(&controller, HeadlampState::On, Duration::from_millis(500)).await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(300)))
@@ -104,6 +124,7 @@ async fn controller_fsm_front_headlamp_no_response_timeout_path() {
         .submit_physical_car_event(PhysicalCarVocabulary::TimerTick)
         .await
         .expect("timer tick");
+    wait_headlamp_state(&controller, HeadlampState::Off, Duration::from_millis(500)).await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(300)))

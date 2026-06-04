@@ -3,11 +3,9 @@
 use std::time::Instant;
 
 use crate::fsm::{step, DomainAction, FsmEvent, FsmState, StepResult};
-use crate::twin_runtime::headlamp_actor::{apply_headlamp_zone, HeadlampActorVocabulary};
 use crate::twin_runtime::outcome_map::headlamp_outcomes_to_domain_actions;
-use crate::twin_runtime::zone_turn::{fsm_event_headlamp_message, zone_turn};
+use crate::twin_runtime::zone_turn::zone_turn;
 use crate::vehicle_state::{HeadlampMessage, HeadlampZoneReply, VehicleContext};
-use ractor::{ActorProcessingErr, ActorRef};
 
 /// Full deterministic turn (pure tests — headlamp applied locally in [`zone_turn`]).
 pub fn twin_turn(
@@ -19,34 +17,47 @@ pub fn twin_turn(
     twin_turn_with_headlamp_replies(current_state, current_ctx, event, now, None, None)
 }
 
-/// Brain path: RPC to headlamp twinlet, then one [`twin_turn_with_headlamp_replies`].
-pub async fn brain_twin_turn(
-    headlamp: &ActorRef<HeadlampActorVocabulary>,
+/// Brain path after tell-back: one [`twin_turn_with_headlamp_replies`] (apply_step / ledger stay in actor).
+pub fn commit_brain_turn(
     current_state: &FsmState,
     current_ctx: &VehicleContext,
     event: &FsmEvent,
     now: Instant,
-) -> Result<StepResult, ActorProcessingErr> {
-    let headlamp_reply = match fsm_event_headlamp_message(event) {
-        Some(msg) => Some(apply_headlamp_zone(headlamp, msg, now).await?),
-        None => None,
-    };
-    let ignition_off_reply = if fsm_step_lands_off(current_state, current_ctx, event, now, headlamp_reply.as_ref())
-    {
-        Some(
-            apply_headlamp_zone(headlamp, HeadlampMessage::ResetForIgnitionOff, now).await?,
-        )
-    } else {
-        None
-    };
-    Ok(twin_turn_with_headlamp_replies(
+    headlamp_reply: Option<HeadlampZoneReply>,
+    ignition_off_reply: Option<HeadlampZoneReply>,
+) -> StepResult {
+    twin_turn_with_headlamp_replies(
         current_state,
         current_ctx,
         event,
         now,
         headlamp_reply,
         ignition_off_reply,
-    ))
+    )
+}
+
+/// Whether this event **enters** [`FsmState::Off`] from a powered state after zone demux.
+pub(crate) fn fsm_step_lands_off(
+    current_state: &FsmState,
+    current_ctx: &VehicleContext,
+    event: &FsmEvent,
+    now: Instant,
+    headlamp_reply: Option<&HeadlampZoneReply>,
+) -> bool {
+    if *current_state == FsmState::Off {
+        return false;
+    }
+    let zone = zone_turn(
+        current_ctx,
+        event,
+        current_state,
+        now,
+        headlamp_reply.cloned(),
+    );
+    matches!(
+        step(current_state, &zone.ctx, event, now).next_state,
+        FsmState::Off
+    )
 }
 
 /// One brain FSM event. `headlamp_reply` / `ignition_off_reply`: when `Some`, twinlet already
@@ -91,24 +102,4 @@ fn twin_turn_with_headlamp_replies(
     result.transition_record.current_ctx = result.modified_ctx.clone();
 
     result
-}
-
-fn fsm_step_lands_off(
-    current_state: &FsmState,
-    current_ctx: &VehicleContext,
-    event: &FsmEvent,
-    now: Instant,
-    headlamp_reply: Option<&HeadlampZoneReply>,
-) -> bool {
-    let zone = zone_turn(
-        current_ctx,
-        event,
-        current_state,
-        now,
-        headlamp_reply.cloned(),
-    );
-    matches!(
-        step(current_state, &zone.ctx, event, now).next_state,
-        FsmState::Off
-    )
 }

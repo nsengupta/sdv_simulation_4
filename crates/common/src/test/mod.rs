@@ -138,6 +138,66 @@ pub async fn inject_matching_ack(controller: &VehicleController, command: &Actua
         .expect("inject matching ack");
 }
 
+/// Poll until the twin headlamp assembly reaches `expected` (tell-back is async).
+pub async fn wait_headlamp_state(
+    controller: &VehicleController,
+    expected: crate::fsm::HeadlampState,
+    timeout: std::time::Duration,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(snapshot) = controller
+            .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
+            .await
+        {
+            if snapshot.context().headlamp.state == expected {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let last = controller
+                .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
+                .await
+                .ok();
+            panic!(
+                "timed out after {timeout:?} waiting for headlamp {expected:?}, last={:?}",
+                last.as_ref().map(|s| s.context().headlamp.state)
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Poll until the operational FSM reaches `expected` (zone tell-back may lag `send_message`).
+pub async fn wait_fsm_state(
+    controller: &VehicleController,
+    expected: crate::fsm::FsmState,
+    timeout: std::time::Duration,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(snapshot) = controller
+            .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
+            .await
+        {
+            if *snapshot.current_state() == expected {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let last = controller
+                .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
+                .await
+                .ok();
+            panic!(
+                "timed out after {timeout:?} waiting for FSM {expected:?}, last={:?}",
+                last.as_ref().map(|s| s.current_state().clone())
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Inject the negative acknowledgement matching an observed command, via the real physical
 /// ingress path.
 pub async fn inject_matching_nack(controller: &VehicleController, command: &ActuationCommand) {

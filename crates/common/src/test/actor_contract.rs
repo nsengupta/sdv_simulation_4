@@ -157,6 +157,8 @@ async fn scenario_actuation_ack_round_trip_via_helper() {
     );
 
     inject_matching_ack(&controller, &command).await;
+    crate::test::wait_headlamp_state(&controller, HeadlampState::On, Duration::from_millis(250))
+        .await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(250)))
@@ -240,6 +242,8 @@ async fn scenario_actuation_nack_round_trip_via_helper() {
     ));
 
     inject_matching_nack(&controller, &command).await;
+    crate::test::wait_headlamp_state(&controller, HeadlampState::Off, Duration::from_millis(250))
+        .await;
 
     // A NACK on the ON request leaves the headlamp Off (the request did not complete).
     let snapshot = controller

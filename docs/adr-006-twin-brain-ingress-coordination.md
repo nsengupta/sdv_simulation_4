@@ -147,6 +147,43 @@ Suppressed rows keep **`old_ctx == current_ctx`** (no silent drops).
 
 ---
 
+## Ledger tool / shutdown observability
+
+The transition ledger is not only for replay of **applied** state — it is the **audit trail**
+for coordination timing and concurrent ingress. A dedicated **offline tool** (M5) reading
+published records is a **key prototype deliverable**, not an afterthought.
+
+**While `PowerBarrier` is open** (between brain accepting `BrainMessage::PowerOff` and the
+row that commits `FsmState::Off`):
+
+| Requirement | Mechanism |
+| ----------- | --------- |
+| Stray ingress is visible | Every controller fact still gets a ledger row at **`record_seq`** order |
+| Stray ingress does not advance the twin | `applied: false`, `suppressed_reason` (e.g. `CoordinatingPowerOff`) |
+| No silent drops | Suppressed rows retain ingress + snapshot; **`old_ctx == current_ctx`** |
+| Applied progress is visible | Rows for barrier start, each `*Complete`, final mode commit — `applied: true` |
+
+**What the tool should answer (examples):**
+
+1. **Shutdown duration** — wall time (or monotonic span via published stamps) from the
+   **`PowerOff`** row that opens the barrier to the **`applied: true`** row that commits **`Off`**
+   with `pending` empty.
+2. **Ingress during shutdown** — count and list rows with `applied: false` and
+   `suppressed_reason == CoordinatingPowerOff` (or `CoordinatingPowerOn`): which
+   `TwinIngress` / FSM facts still arrived (lux, RPM, `TimerTick`, duplicate completes, …).
+
+Those suppressed rows are **first-class evidence**, not errors — they explain what the
+physical world kept sending while assemblies were still stopping.
+
+**Interim (before M4):** headlamp tell-back may **backlog** `Fsm` in the brain without a ledger
+row (`milestone/actor-headlamp` step 6). That is **not** the target: replace backlog with
+barrier + D2 ledger when power coordination lands so the tool never loses concurrent facts.
+
+**Replay (C1):** total order on `record_seq` plus per-row `applied` is sufficient for both
+metrics above; correlation IDs stay deferred until overlapping coordinations exist.
+
+---
+
 ## Leakage rule (brain actions only)
 
 - **L1** emits **`{Zone}Outcome`**, never `DomainAction`.
@@ -181,7 +218,7 @@ Use this when extending **P2** beyond Headlamp + Powertrain (blog/README how-to)
 | **M2** | Demux: twinlets without `fsm → vehicle_state` `DomainAction`; optional `TwinIngress` shim still from `FsmEvent` | Next pyramid work |
 | **M3** | Child actors (headlamp first) | After pyramid gate |
 | **M4** | Full `TwinIngress` at controller; brain barrier + `applied` ledger | Target of this ADR |
-| **M5** | Offline replay tool consuming `applied` + `ingress` | Future |
+| **M5** | Offline replay / **shutdown observability** tool (`applied` + suppressed ingress) | Future — see [Ledger tool / shutdown observability](#ledger-tool--shutdown-observability) |
 
 Do not block M2 on full power coordination; introduce `TwinIngress` and barrier incrementally.
 

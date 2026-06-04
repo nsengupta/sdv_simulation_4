@@ -172,6 +172,11 @@ impl CarSnapshot {
 pub enum DigitalTwinCarVocabulary {
     /// Drive the FSM (`crate::fsm::step` derives context from event payloads and computes transitions).
     Fsm(FsmEvent),
+    /// Headlamp twinlet tell-back after [`crate::twin_runtime::headlamp_actor::HeadlampActor`] applied one message.
+    HeadlampZoneReady {
+        turn_id: u64,
+        reply: crate::vehicle_state::HeadlampZoneReply,
+    },
     /// Return an as-of snapshot of the twin (stamped with `as_of_seq`); does **not** call
     /// [`crate::fsm::transition`].
     GetStatus(RpcReplyPort<CarSnapshot>),
@@ -193,7 +198,9 @@ impl TryFrom<DigitalTwinCarVocabulary> for FsmEvent {
     fn try_from(value: DigitalTwinCarVocabulary) -> Result<Self, Self::Error> {
         match value {
             DigitalTwinCarVocabulary::Fsm(e) => Ok(e),
-            DigitalTwinCarVocabulary::GetStatus(_) => Err(NotFsmVocabulary),
+            DigitalTwinCarVocabulary::GetStatus(_) | DigitalTwinCarVocabulary::HeadlampZoneReady { .. } => {
+                Err(NotFsmVocabulary)
+            }
         }
     }
 }
@@ -203,7 +210,7 @@ impl DigitalTwinCarVocabulary {
     pub fn as_fsm_event(&self) -> Option<&FsmEvent> {
         match self {
             Self::Fsm(e) => Some(e),
-            Self::GetStatus(_) => None,
+            Self::GetStatus(_) | Self::HeadlampZoneReady { .. } => None,
         }
     }
 
@@ -211,7 +218,7 @@ impl DigitalTwinCarVocabulary {
     pub fn into_fsm_event(self) -> Option<FsmEvent> {
         match self {
             Self::Fsm(e) => Some(e),
-            Self::GetStatus(_) => None,
+            Self::GetStatus(_) | Self::HeadlampZoneReady { .. } => None,
         }
     }
 }

@@ -1,18 +1,20 @@
-//! L4 headlamp twinlet — [`apply_headlamp_zone`] RPC; child runs [`HeadlampContext::on_receiving_message`].
+//! L4 headlamp twinlet — brain **tell**s [`HeadlampActorVocabulary::Apply`]; twinlet **tell**s
+//! [`DigitalTwinCarVocabulary::HeadlampZoneReady`] back.
 
 use async_trait::async_trait;
-use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use ractor::{Actor, ActorProcessingErr, ActorRef};
 use std::time::Instant;
 
-use crate::vehicle_state::{HeadlampContext, HeadlampMessage, HeadlampZoneReply};
+use crate::digital_twin::DigitalTwinCarVocabulary;
+use crate::vehicle_state::{HeadlampContext, HeadlampMessage};
 
-/// RPC envelope for [`apply_headlamp_zone`].
+/// Tell payload: one [`HeadlampMessage`] for this brain [`turn_id`](Self::turn_id).
 #[derive(Debug)]
 pub struct HeadlampActorVocabulary {
     pub message: HeadlampMessage,
     pub now: Instant,
-    pub reply: RpcReplyPort<HeadlampZoneReply>,
+    pub turn_id: u64,
+    pub brain: ActorRef<DigitalTwinCarVocabulary>,
 }
 
 #[derive(Default)]
@@ -38,50 +40,45 @@ impl Actor for HeadlampActor {
         HeadlampActorVocabulary {
             message,
             now,
-            reply,
+            turn_id,
+            brain,
         }: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         let zone_reply = state.on_receiving_message(message, now);
         *state = zone_reply.ctx.clone();
-        if !reply.is_closed() {
-            reply.send(zone_reply).map_err(|e| {
-                std::io::Error::other(format!("HeadlampZoneReply reply: {e:?}"))
+        brain
+            .send_message(DigitalTwinCarVocabulary::HeadlampZoneReady {
+                turn_id,
+                reply: zone_reply,
+            })
+            .map_err(|e| {
+                ActorProcessingErr::from(std::io::Error::other(format!(
+                    "HeadlampZoneReady tell-back: {e:?}"
+                )))
             })?;
-        }
         Ok(())
     }
 }
 
-const HEADLAMP_RPC_TIMEOUT: Duration = Duration::from_secs(5);
-
-pub async fn apply_headlamp_zone(
-    actor: &ActorRef<HeadlampActorVocabulary>,
+/// Fire-and-forget tell to the headlamp twinlet (no reply port on this hop).
+pub fn tell_headlamp_zone(
+    headlamp: &ActorRef<HeadlampActorVocabulary>,
+    brain: &ActorRef<DigitalTwinCarVocabulary>,
+    turn_id: u64,
     message: HeadlampMessage,
     now: Instant,
-) -> Result<HeadlampZoneReply, ActorProcessingErr> {
-    use ractor::rpc::CallResult;
-
-    match actor
-        .call(
-            |reply| HeadlampActorVocabulary {
-                message,
-                now,
-                reply,
-            },
-            Some(HEADLAMP_RPC_TIMEOUT),
-        )
-        .await
-        .map_err(ActorProcessingErr::from)?
-    {
-        CallResult::Success(zone_reply) => Ok(zone_reply),
-        CallResult::Timeout => Err(ActorProcessingErr::from(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "apply_headlamp_zone timed out",
-        ))),
-        CallResult::SenderError => Err(ActorProcessingErr::from(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "apply_headlamp_zone reply port closed",
-        ))),
-    }
+) -> Result<(), ActorProcessingErr> {
+    headlamp
+        .send_message(HeadlampActorVocabulary {
+            message,
+            now,
+            turn_id,
+            brain: brain.clone(),
+        })
+        .map_err(|e| {
+            ActorProcessingErr::from(std::io::Error::other(format!(
+                "tell_headlamp_zone: {e:?}"
+            )))
+        })
 }

@@ -131,6 +131,7 @@ async fn given_power_on_then_power_off_facade_when_idle_then_state_is_off() {
 
     controller.send_power_on().await.expect("send_power_on");
     controller.send_power_off().await.expect("send_power_off");
+    crate::test::wait_fsm_state(&controller, FsmState::Off, Duration::from_millis(250)).await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(250)))

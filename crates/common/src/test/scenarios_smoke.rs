@@ -86,6 +86,7 @@ async fn scenario_rpm_input_ignored_when_ignition_off() {
     actor
         .send_message(DigitalTwinCarVocabulary::from(FsmEvent::UpdateRpm(3000)))
         .unwrap();
+    tokio::task::yield_now().await;
 
     let car = get_snapshot(&actor, DEFAULT_ACTOR_TIMEOUT).await;
     assert_eq!(*car.current_state(), FsmState::Off);
