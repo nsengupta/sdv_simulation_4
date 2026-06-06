@@ -89,8 +89,43 @@ The gateway updates policy state, encodes CMD on CAN, and correlates ACK/NACK fr
 
 Suggested snippet source:
 
-- `crates/gateway/src/gateway_runtime.rs` (`spawn_front_headlamp_command_router`)
-- `crates/common/src/engine/controller/actuation_manager.rs` (command emission)
+- `crates/gateway/src/gateway_runtime.rs` (`spawn_front_headlamp_command_publisher`)
+- `crates/common/src/twin_runtime/controller/actuation_manager.rs` (command emission)
+
+### 6) Observability sinks are injected at gateway init — the twin does not route stdout
+
+Episode 1 left replay and diagnostics as natural outputs of the deterministic core. Episode 2
+wires them through **two separate channels** with different jobs (fact ledger vs presentation).
+The important runtime rule:
+
+**CLI flags → gateway `run()` → `VehicleControllerRuntimeOptions` → twin sinks (or absence thereof).**
+
+The twin emits through trait objects (`TransitionRecordSink`, `DiagnosticSink`). It never
+reads `--print-transitions-only` or chooses stdout vs discard. The gateway decides, once, when
+it constructs the runtime:
+
+| Launch | Diagnostic sink on twin | Transition sink on twin |
+| --- | --- | --- |
+| default | yes → stdout observer task | no |
+| `--print-transitions-only` | **no** | yes → coloured ledger task |
+
+There is no third “mixed” mode (ledger + diagnostics on stdout together).
+
+When the gateway does **not** inject a sink, `VirtualCarActor` holds `None` and guards each
+emission with `if let Some(sink)`. That guard is **not** routing policy — it is the mechanical
+consequence of “runtime did not inject a sink.” Skipping the guard path also skips building
+`DiagnosticMessage` / projecting `PublishedTransitionRecord`, so “observability off” is cheap.
+
+The runtime owns the **picker** on the RX side (stdout printer today; file or GUI later). The
+twin is only a **dropper** into whatever was wired. Do not confuse ledger-only silence on the
+console with a stalled actuator: CAN actuation (`actuation_command_tx`) remains wired in every
+mode; only human-facing streams are toggled at init.
+
+Suggested snippet sources:
+
+- `crates/gateway/src/gateway_runtime.rs` (`diagnostic_tx` / `transition_tx` wiring in `run`)
+- `crates/common/src/twin_runtime/controller/virtual_car_actor.rs` (`pre_start` sink wrap)
+- `crates/common/src/diagnostic/mod.rs` (module comment: twin unconcerned with RX consumer)
 
 ## Output Screenshots / Clips
 

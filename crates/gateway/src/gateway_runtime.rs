@@ -1,6 +1,7 @@
 //! Gateway wiring: controller install, background loops, and CAN read loop. Keeps `main` thin.
 
 use anyhow::Result;
+use std::io::IsTerminal;
 use common::facade::{
     ACK_OFF, ACK_ON, ActuationCommand, MSG_ACK_OFF, MSG_ACK_ON, MSG_NACK_OFF, MSG_NACK_ON,
     NACK_OFF, NACK_ON, PhysicalCarVocabulary, PublishedTransitionRecord, VehicleController,
@@ -15,6 +16,7 @@ use vehicle_device_bus::devices::front_headlamp::can::{decode_payload_from_can_f
 use vehicle_device_bus::devices::front_headlamp::policy::{FrontHeadlampPolicy, FrontHeadlampPolicyDecision};
 
 use crate::ingress;
+use crate::transition_log;
 
 /// Default SocketCAN interface (matches emulator and front_headlamp_actuator).
 pub const DEFAULT_CAN_INTERFACE: &str = "vcan0";
@@ -29,7 +31,8 @@ const INGRESS_LOG_CHANNEL_CAPACITY: usize = 512;
 pub struct GatewayLaunchConfig<'a> {
     pub car_identity: &'a str,
     pub print_timer_tick: bool,
-    pub print_transitions: bool,
+    /// Coloured ledger on stdout; no diagnostic sink, ingress log, or startup banners. ANSI when TTY.
+    pub print_transitions_only: bool,
     /// Log ignored headlamp ingress (e.g. command-frame echo on shared CAN). Off by default for demos.
     pub trace_actuation_ingress: bool,
     pub can_interface: &'a str,
@@ -49,27 +52,20 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     let front_headlamp_policy = Arc::new(Mutex::new(FrontHeadlampPolicy::default()));
     let (actuation_cmd_tx, actuation_cmd_rx) = mpsc::channel(ACTUATION_COMMAND_CHANNEL_CAPACITY);
 
-    // Diagnostic channel: twin emits DiagnosticMessage, runtime observes.
-    let (diag_tx, diag_rx) = mpsc::unbounded_channel();
-    let _diag_observer = spawn_stdout_diagnostic_observer(diag_rx);
+    // Diagnostic channel: twin emits DiagnosticMessage, runtime observes (unless ledger-only).
+    let diagnostic_tx = if launch.print_transitions_only {
+        None
+    } else {
+        let (diag_tx, diag_rx) = mpsc::unbounded_channel();
+        let _diag_observer = spawn_stdout_diagnostic_observer(diag_rx);
+        Some(diag_tx)
+    };
 
-    // Transition channel: twin emits PublishedTransitionRecord, optionally printed to stdout.
-    let transition_tx = if launch.print_transitions {
-        let (tx, mut rx) = mpsc::channel::<PublishedTransitionRecord>(256);
-        tokio::spawn(async move {
-            while let Some(record) = rx.recv().await {
-                println!(
-                    "[transition] car={} seq={} at_unix={:?} {:?} {:?} -> {:?} actions={:?}",
-                    record.car_identity,
-                    record.record_seq,
-                    record.at_unix,
-                    record.event,
-                    record.old_state,
-                    record.next_state,
-                    record.actions,
-                );
-            }
-        });
+    // Transition channel: wired only in ledger-only mode (default = no ledger sink on twin).
+    let transition_tx = if launch.print_transitions_only {
+        let (tx, rx) = mpsc::channel::<PublishedTransitionRecord>(256);
+        let color = std::io::stdout().is_terminal();
+        let _ = transition_log::spawn_transition_log_task(rx, color);
         Some(tx)
     } else {
         None
@@ -78,7 +74,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     let runtime_options = VehicleControllerRuntimeOptions {
         log_timer_tick: launch.print_timer_tick,
         actuation_command_tx: Some(actuation_cmd_tx),
-        diagnostic_tx: Some(diag_tx),
+        diagnostic_tx,
         transition_tx,
         ..VehicleControllerRuntimeOptions::default()
     };
@@ -103,33 +99,42 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
 
     spawn_timer_tick_loop(controller.clone());
 
-    println!(
-        "⚡ Gateway on {} — CAN → VehicleEvent → PhysicalCarVocabulary → VehicleController",
-        launch.can_interface
-    );
-    println!(
-        "[gateway] front-headlamp CMD egress on CAN; run `cargo run -p front_headlamp_actuator` for ACK/NACK"
-    );
-    if launch.print_timer_tick {
-        println!("[gateway] TimerTick heartbeat logging enabled (--print-timer-tick)");
-    }
-    if launch.print_transitions {
-        println!("[gateway] FSM transition logging enabled (--print-transitions)");
-    }
-    if launch.trace_actuation_ingress {
+    if !launch.print_transitions_only {
         println!(
-            "[gateway] actuation ingress trace enabled (--trace-actuation-ingress; ignored CMD/correlation lines)"
+            "⚡ Gateway on {} — CAN → VehicleEvent → PhysicalCarVocabulary → VehicleController",
+            launch.can_interface
+        );
+        println!(
+            "[gateway] front-headlamp CMD egress on CAN; run `cargo run -p front_headlamp_actuator` for ACK/NACK"
+        );
+        if launch.print_timer_tick {
+            println!("[gateway] TimerTick heartbeat logging enabled (--print-timer-tick)");
+        }
+        if launch.trace_actuation_ingress {
+            println!(
+                "[gateway] actuation ingress trace enabled (--trace-actuation-ingress; ignored CMD/correlation lines)"
+            );
+        }
+    } else {
+        eprintln!(
+            "[gateway] ledger-only mode (--print-transitions-only); colours={}",
+            std::io::stdout().is_terminal()
         );
     }
 
     // Off-hot-path ingress logger: a frozen console must not block ACK delivery to the twin.
-    let (ingress_log_tx, mut ingress_log_rx) =
-        mpsc::channel::<String>(INGRESS_LOG_CHANNEL_CAPACITY);
-    tokio::spawn(async move {
-        while let Some(line) = ingress_log_rx.recv().await {
-            println!("{line}");
-        }
-    });
+    let ingress_log_tx = if launch.print_transitions_only {
+        None
+    } else {
+        let (ingress_log_tx, mut ingress_log_rx) =
+            mpsc::channel::<String>(INGRESS_LOG_CHANNEL_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(line) = ingress_log_rx.recv().await {
+                println!("{line}");
+            }
+        });
+        Some(ingress_log_tx)
+    };
 
     let (can_tx, can_rx) = mpsc::unbounded_channel();
     let _can_reader = spawn_can_reader_thread(
@@ -138,7 +143,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
         launch.trace_actuation_ingress,
         can_tx,
     )?;
-    run_can_ingress_dispatch_loop(controller, can_rx, ingress_log_tx).await
+    run_can_ingress_dispatch_loop(controller, can_rx, ingress_log_tx.as_ref()).await
 }
 
 fn spawn_timer_tick_loop(controller: VehicleController) {
@@ -287,7 +292,7 @@ fn format_front_headlamp_ingress(
 async fn run_can_ingress_dispatch_loop(
     controller: VehicleController,
     mut rx: mpsc::UnboundedReceiver<CanIngressEnvelope>,
-    ingress_log_tx: mpsc::Sender<String>,
+    ingress_log_tx: Option<&mpsc::Sender<String>>,
 ) -> Result<()> {
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -309,8 +314,8 @@ async fn run_can_ingress_dispatch_loop(
                     .submit_physical_car_event(physical)
                     .await
                     .map_err(|e| anyhow::anyhow!("submit physical car event: {e:?}"))?;
-                if let Some(line) = line {
-                    let _ = ingress_log_tx.try_send(line);
+                if let (Some(line), Some(tx)) = (line, ingress_log_tx) {
+                    let _ = tx.try_send(line);
                 }
             }
         }

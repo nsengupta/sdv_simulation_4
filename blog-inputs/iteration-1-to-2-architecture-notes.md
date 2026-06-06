@@ -226,6 +226,14 @@ You cannot reconstruct one from the other. The intended cleanup (deferred to act
 stop the parent emitting the *state-transition* diagnostic directly; let a future observer
 actor **project** it from the ledger.
 
+**Init-time injection (sim_3 gateway).** Which stream reaches stdout is not decided per
+emission inside the twin. CLI flags → gateway `run()` → `VehicleControllerRuntimeOptions` →
+optional channels wrapped as sinks in `VirtualCarActor::pre_start`. If the gateway does not
+wire `diagnostic_tx`, the twin has no diagnostic sink; `if let Some(sink)` at emit sites is
+the mechanical consequence of that init choice — not ledger-mode routing logic. Same pattern
+for `transition_tx` (default: no ledger sink; `--print-transitions-only`: ledger sink only).
+Blog detail: `episode-02-runtime-wiring-and-actuation-path.md` §6; README Observability.
+
 ---
 
 ## 6. Correctness model: enforce / announce / detect (ADR-3, ADR-4, WI-2)
