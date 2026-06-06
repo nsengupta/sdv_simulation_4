@@ -37,12 +37,17 @@ L4 demux / `twin_turn` (M2), **TangleGuard clean**. Tagged: `pyramid-m2-complete
 Layer map: [`docs/design-notes-pyramid-layers.md`](docs/design-notes-pyramid-layers.md).
 **Deferred:** `sdv_core` crate split (packaging only; same boundaries already hold as modules).
 
-**Active next (actor track, branch off tagged `main`):** per-zone child actors and ADR-6 brain
-features — blog **Iteration 3**; start from `milestone/actor-headlamp` (or similar).
-
 **ADR series:** `docs/adr-005-*.md` (L1 alphabets) → `docs/adr-006-*.md` (brain & ingress) → [`docs/adr-007-fsm-quiescence-and-cut.md`](docs/adr-007-fsm-quiescence-and-cut.md) (**cut**, internal FSM events, quiescence at commit).
 
-**Not in scope yet:** full actorification; offline file-writer + folding verifier (designed, unbuilt).
+**Actor track (branch `milestone/actor-headlamp`; blog Iteration 3):** the **headlamp assembly**
+is an independent **`HeadlampActor`** — a ractor child of **`VirtualCarActor`** (brain). Brain and
+assembly communicate only through **enumerated mailbox types** (tell / tell-back / zone deadlines),
+not shared in-process L1 calls on the production path. Step-7b adds quiescent commit, `ZoneReplies`,
+and actor-owned ACK timers. Handoff: [`docs/milestone-actor-headlamp-scope.md`](docs/milestone-actor-headlamp-scope.md).
+
+**Still ahead on the actor track:** zone #2 twinlet, ADR-6 power barrier, actuation child actor.
+
+**Not in scope yet:** full actorification of every zone; offline file-writer + folding verifier (designed, unbuilt).
 
 ---
 
@@ -78,9 +83,10 @@ correlation IDs, diagnostics-as-projection, actuation child actor, actuation res
 | **gateway**                 | Owns ingress (read CAN), **projection** into twin vocabulary, the **digital twin** runtime, and egress (write headlamp **CMD** frames). |
 | **front_headlamp_actuator** | Stand-in body ECU: receives CMD, replies with **ACK** or **NACK** on the same bus (~150 ms later).                                      |
 
-Inside the gateway, the twin is a **`VirtualCarActor`** ([`ractor`](https://crates.io/crates/ractor/0.15.12) 
-mailbox, single-threaded handling) driving a pure **FSM** plus an orthogonal **lighting**
-sub-state. Outcomes are visible on **stdout** — a deliberate stand-in for a dashboard or cloud stream.
+Inside the gateway, the twin is a **`VirtualCarActor`** ([`ractor`](https://crates.io/crates/ractor/0.15.12)
+mailbox, single-threaded handling) driving a pure **FSM** plus zone assemblies. The **headlamp
+zone** runs in a child **`HeadlampActor`**; the brain tell/tell-backs the twinlet over enumerated
+vocabulary before committing ledger rows. Outcomes are visible on **stdout** — a deliberate stand-in for a dashboard or cloud stream.
 
 Signals are modeled in a **VSS-inspired** Rust enum (`EngineRpm`, `AmbientLux`, and a
 decoded-but-unused `VehicleSpeed` slot for a future observed-speed ECU). Payload layout and headlamp wire kinds live in **`vehicle_device_bus`** so the gateway stays thin and the actuator binary stays independent.
@@ -107,7 +113,7 @@ Telemetry and commands meet on one virtual CAN interface; the gateway is the onl
 
 ![SDV prototype — emulator, gateway (digital twin), front-headlamp actuator, and vcan0](assets/SDV-Blog-Inputs-4.jpg)
 
-**Ingress path:** CAN frame → `VssSignal` / headlamp payload → `PhysicalCarVocabulary` →`PhysicalToDigitalProjector` → `DigitalTwinCarVocabulary` → actor → `fsm::step`.
+**Ingress path:** CAN frame → `VssSignal` / headlamp payload → `PhysicalCarVocabulary` → `PhysicalToDigitalProjector` → `DigitalTwinCarVocabulary::Fsm` → **`VirtualCarActor`** (brain) → tell **`HeadlampActor`** when demux routes a headlamp message → tell-back → `commit_resolved_turn` / `fsm::step`.
 
 **Egress path:** `DomainAction` (e.g. request headlamp ON) → `DefaultActuationManager` →`ActuationCommand` → gateway encodes CMD → CAN → actuator → ACK/NACK → same reader thread →policy correlation → twin ACK/NACK/incomplete events.
 
@@ -124,22 +130,35 @@ VehicleContext
 └── headlamp   : HeadlampContext     // HeadlampState + ACK-wait bookkeeping
 ```
 
-`fsm::step` has become a thin **orchestrator**: it dispatches each event to the owning assembly (`apply_rpm`, `apply_lux`, `apply_on_ack`, …), triggers derivations (`refresh_speed`), and runs the operational FSM — but the subsystem *behaviour* lives on the assembly types.
+`fsm::step` is the L2 **orchestrator** after L4 zone merge: operational FSM transitions and domain actions. L1 headlamp behaviour runs in **`HeadlampActor`** (or locally in pure tests via `zone_turn`).
 
-> This is in preparation for the zone-actor plan, where each assembly's `impl` block becomes a child actor's local state + flat FSM. The aggregate's fields stay public **only** as a compile-compatibility shim during the transition.
+> **Headlamp (step-7b):** `HeadlampContext` still embeds in `VehicleContext` (phase A). The brain refreshes that embed from **`HeadlampZoneReply`** after tell-back — it does not call `on_receiving_message` in parallel with the child. Other zones remain in-process until actorified; see the milestone handoff doc.
 
-### Actor turn contract
+### Brain ↔ headlamp assembly (enumerated mailboxes)
 
-One mailbox message → one authoritative cut. The actor loop is fixed-order:
+Cross-boundary traffic uses typed enums only:
 
-1. `fsm::step(...)` — pure decision (context update, operational FSM, intended actions).
-2. `twin_car.apply_step(...)` — persist.
-3. Emit transition record — **after** persist, **before** actuation (captures intent, not outcome).
-4. Execute actions — actuation manager takes an **immutable** twin ref; no `step()` re-entry in the same turn.
+| Direction | Types |
+| --------- | ----- |
+| Brain → headlamp | `HeadlampActorMsg::Apply(HeadlampActorVocabulary { message, turn_id, tell_attempt, … })` |
+| Headlamp → brain (correlated) | `DigitalTwinCarVocabulary::HeadlampZoneReady { turn_id, tell_attempt, reply }` |
+| Headlamp → brain (zone deadline) | `HeadlampZoneSpontaneous` (ACK timer → `FrontHeadlampActuationIncomplete` commit) |
+| Brain internal (unresponsive twinlet) | `TellBackTimeout` → retry tell → synthetic embed |
 
-**`RequestFrontHeadlampOn` does not flip the lamp in the action phase.** Inside `step()`, lux crossing the threshold moves lighting to `OnRequested` and emits the command; `On` arrives only when a later ACK event runs through `step()`. ACK/NACK on CAN becomes a **new** mailbox event.
+Tell is fire-and-forget; the brain mailbox stays free until tell-back (or timeout). Details: [`docs/milestone-actor-headlamp-scope.md`](docs/milestone-actor-headlamp-scope.md).
 
-Each ledger record lists **intended** `DomainAction`s from that step. Runtime-only hints (e.g. actor mode) are filtered out of the stored record; ACK, NACK, timeout, and failure remain separate facts. See `crates/common/src/fsm/step.rs` and `crates/common/src/twin_runtime/controller/virtual_car_actor.rs`.
+### Actor commit contract (step-7b)
+
+One **FSM ingress** → one **quiescent commit** (0+ internal hops after zone merge):
+
+1. Brain receives `DigitalTwinCarVocabulary::Fsm(…)` (or processes tell-back / spontaneous zone message).
+2. If demux routes headlamp: **tell** `HeadlampActor` → wait for **`HeadlampZoneReady`** (with tell-back deadline + retries).
+3. **`commit_resolved_turn`** → `run_to_quiescence` → `zone_turn` merge + `fsm::step` (+ detector-synthesized internal hops).
+4. **`apply_committed_quiescence`**: one ledger row per hop → single `apply_step` on final cut → execute merged actuation.
+
+**`RequestFrontHeadlampOn` does not flip the lamp in the action phase.** Lux crossing the threshold moves lighting to `OnRequested` and emits the command; `On` arrives only when a later ACK event runs through the headlamp path. ACK/NACK on CAN becomes a **new** FSM ingress.
+
+Each ledger record lists **intended** `DomainAction`s from that hop. Runtime-only hints (e.g. actor mode) are filtered out of the stored record. See `crates/common/src/twin_runtime/twin_turn.rs` and `virtual_car_actor.rs`.
 
 ---
 
@@ -373,7 +392,8 @@ is optional (`sdv_core` split, gateway e2e diagnostics polish).
 
 **Actor track (branches `milestone/actor-*`; blog Iteration 3):**
 
-- Per-zone child actors (headlamp first); parent FSM orchestration; unified diagnostic fan-in (WI-14)
+- **Done on `milestone/actor-headlamp`:** headlamp child actor, typed brain↔assembly mailboxes, tell-back race, quiescence, actor-owned ACK timer (template for zone #2)
+- ADR-6 power barrier; further zone twinlets
 - Single-writer ledger actor, correlation IDs, diagnostics-as-projection (WI-8–10)
 - Actuation child + resilience (WI-11, WI-13); `Clock` seam (WI-3)
 - Offline ledger file writer + folding verifier
