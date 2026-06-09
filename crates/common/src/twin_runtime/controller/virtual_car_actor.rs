@@ -61,6 +61,10 @@ impl From<&str> for VirtualCarActorArgs {
 }
 
 /// One FSM event awaiting headlamp tell-back(s) before commit.
+///
+/// `PrimaryHeadlamp` waits for the zone twinlet to ACK/NACK the actuation command.
+/// If the FSM lands on `Off`, a second `IgnitionOffReset` wait is started to tell the
+/// headlamp zone to reset its internal state for the next ignition cycle.
 #[derive(Debug)]
 enum PendingBrainTurn {
     /// Event's primary zone message was told; waiting for embed.
@@ -81,6 +85,7 @@ enum PendingBrainTurn {
     },
 }
 
+/// Mutable state of the virtual car actor, held across `handle` calls.
 pub struct VirtualCarRuntimeState {
     twin_car: DigitalTwinCar,
     headlamp_actor: ActorRef<HeadlampActorMsg>,
@@ -191,6 +196,10 @@ impl Actor for VirtualCarActor {
         })
     }
 
+    /// Main message dispatch: each variant delegates to a dedicated handler, then
+    /// drains the FSM backlog. The `pending_turn` guard serialises turns — new FSM events
+    /// arriving while a tell-back is in-flight are buffered in `fsm_backlog` instead of
+    /// starting a new turn.
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -200,19 +209,26 @@ impl Actor for VirtualCarActor {
         use DigitalTwinCarVocabulary::{Fsm, GetStatus, HeadlampZoneReady, HeadlampZoneSpontaneous, TellBackTimeout};
 
         match message {
-            Fsm(evt) => {
-                if matches!(evt, FsmEvent::TimerTick) && runtime_state.runtime_options.log_timer_tick {
+            Fsm(evt_arrived) => {
+                if matches!(evt_arrived, FsmEvent::TimerTick) && runtime_state.runtime_options.log_timer_tick {
                     // TODO: rate-limit once structured logging is introduced.
                     if let Some(sink) = &runtime_state.diagnostic_sink {
                         let _ = sink.try_emit(diag_timer_tick(runtime_state.twin_car.identity()));
                     }
                 }
                 let now = Instant::now();
+                // If a turn is already awaiting tell-back, buffer this event instead of
+                // starting a parallel turn — serialises FSM processing.
                 if runtime_state.pending_turn.is_some() {
-                    runtime_state.fsm_backlog.push_back((evt, now));
+                    // Buffer the event with its arrival timestamp for later draining.
+                    runtime_state.fsm_backlog.push_back((evt_arrived, now));
                     return Ok(());
                 }
-                Self::begin_fsm_turn(&myself, runtime_state, evt, now).await?;
+                // No pending turn: start a new FSM turn (assigns turn_id, may begin a
+                // headlamp wait or commit directly).
+                Self::begin_fsm_turn(&myself, runtime_state, evt_arrived, now).await?;
+                // After the new turn consumed (or skipped headlamp wait), drain any
+                // backlogged events while no turn is pending.
                 Self::pump_fsm_backlog(&myself, runtime_state).await
             }
             HeadlampZoneReady {
@@ -254,6 +270,9 @@ impl Actor for VirtualCarActor {
         }
     }
 
+    /// Clean up before actor exit: abort any pending tell-back timer and stop the
+    /// headlamp twinlet. Target design: supervisor-ordered teardown of assembly actors
+    /// (see milestone doc).
     async fn post_stop(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -270,6 +289,8 @@ impl Actor for VirtualCarActor {
 }
 
 impl VirtualCarActor {
+    /// Abort any active tell-back timer for a pending turn.
+    /// Called during shutdown and when re-arming a new timer.
     fn abort_pending_timer(pending: PendingBrainTurn) {
         match pending {
             PendingBrainTurn::PrimaryHeadlamp { mut timer, .. }
@@ -279,12 +300,16 @@ impl VirtualCarActor {
         }
     }
 
+    /// Cancel a tell-back timer if it is still running.
+    /// Safe to call when `timer` is `None`.
     fn abort_tell_back_timer(timer: &mut Option<TellBackTimer>) {
         if let Some(handle) = timer.take() {
             handle.abort();
         }
     }
 
+    /// Schedule (or re-schedule) a `TellBackTimeout` message after `ZONE_TELL_BACK_WAIT`.
+    /// Cancels any previously running timer for this slot first.
     fn arm_tell_back_timer(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         wait: TellBackWait,
@@ -302,6 +327,10 @@ impl VirtualCarActor {
         ));
     }
 
+    /// Send a headlamp zone message, arm the tell-back timer, and stash the pending turn.
+    ///
+    /// Two variants exist: `PrimaryHeadlamp` for the event's own message, and
+    /// `IgnitionOffReset` (sent after the primary completes **and** the FSM lands on `Off`).
     async fn begin_headlamp_wait(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
@@ -342,6 +371,8 @@ impl VirtualCarActor {
         Ok(())
     }
 
+    /// Start processing one FSM event: assign a turn ID, then either begin a headlamp wait
+    /// (if the event carries a headlamp message, or the step lands on `Off`) or commit directly.
     async fn begin_fsm_turn(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
@@ -390,6 +421,12 @@ impl VirtualCarActor {
         .await
     }
 
+    /// Handle a `HeadlampZoneReady` reply from the twinlet.
+    /// Matches it against the current pending turn (by `turn_id` + `tell_attempt`):
+    /// - `PrimaryHeadlamp`: if the FSM now lands on `Off`, upgrade to `IgnitionOffReset` wait;
+    ///   otherwise commit the turn with the primary reply.
+    /// - `IgnitionOffReset`: commit with both replies.
+    /// - Mismatch: restore `pending_turn` unchanged (stale reply).
     async fn on_headlamp_zone_ready(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
@@ -456,6 +493,9 @@ impl VirtualCarActor {
         Ok(())
     }
 
+    /// Handle a `TellBackTimeout`: retry the tell-back if attempts remain, or
+    /// forge a synthetic reply (exhausted) and commit the turn.
+    /// Mirrors the same structure as `on_headlamp_zone_ready`.
     async fn on_tell_back_timeout(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
@@ -553,6 +593,8 @@ impl VirtualCarActor {
         Ok(())
     }
 
+    /// Handle a spontaneous headlamp actuation completion (detected by the headlamp actuator
+    /// polling during *another* zone's tell-back wait). Emitted as a synthetic FSM event.
     async fn on_headlamp_zone_spontaneous(
         runtime_state: &mut VirtualCarRuntimeState,
         direction: crate::fsm::FrontHeadlampSwitchDirection,
@@ -570,12 +612,15 @@ impl VirtualCarActor {
         .await
     }
 
+    /// Drain the FSM backlog as long as no turn is pending.
+    /// Called after every handler that might have consumed a pending turn.
     async fn pump_fsm_backlog(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
     ) -> Result<(), ActorProcessingErr> {
         while runtime_state.pending_turn.is_none() {
-            let Some((evt, now)) = runtime_state.fsm_backlog.pop_front() else {
+            let Some((evt, now)) = runtime_state.fsm_backlog.pop_front()
+            else {
                 break;
             };
             Self::begin_fsm_turn(brain, runtime_state, evt, now).await?;
@@ -583,6 +628,7 @@ impl VirtualCarActor {
         Ok(())
     }
 
+    /// Build a `ResolvedTurn` from the ingress event and optional headlamp replies.
     fn resolved_turn(
         ingress: FsmEvent,
         now: Instant,
@@ -596,6 +642,8 @@ impl VirtualCarActor {
         }
     }
 
+    /// Run the quiescence pipeline on the resolved turn, then apply the resulting
+    /// actuation actions and diagnostic emissions.
     async fn commit_resolved_turn(
         runtime_state: &mut VirtualCarRuntimeState,
         resolved: ResolvedTurn,
@@ -608,6 +656,8 @@ impl VirtualCarActor {
         Self::apply_committed_quiescence(runtime_state, quiescent).await
     }
 
+    /// Apply a quiescence result: step the twin, emit transition records,
+    /// execute domain actions (actuation), and fire diagnostic messages.
     async fn apply_committed_quiescence(
         runtime_state: &mut VirtualCarRuntimeState,
         quiescent: QuiescentResult,
@@ -688,6 +738,8 @@ impl VirtualCarActor {
         Ok(())
     }
 
+    /// Emit one transition record via the transition sink, falling back to the
+    /// diagnostic sink on overflow or channel closure.
     fn try_emit_transition_record(
         runtime_state: &mut VirtualCarRuntimeState,
         record_seq: u64,
@@ -721,6 +773,7 @@ impl VirtualCarActor {
         }
     }
 
+    /// Reply to a `GetStatus` RPC with the current `CarSnapshot`.
     fn reply_get_status(
         reply: RpcReplyPort<CarSnapshot>,
         twin_car: &DigitalTwinCar,
@@ -737,6 +790,8 @@ impl VirtualCarActor {
 }
 
 /// Classify a headlamp state change as a positive ACK settle, if any.
+/// Probes the domain state before and after the step: if `OnRequested→On` or
+/// `OffRequested→Off`, the actuation completed positively.
 fn front_headlamp_confirmed_direction(
     before: HeadlampState,
     after: HeadlampState,
