@@ -2,11 +2,11 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
-use crate::fsm::{FsmEvent, HeadlampState};
+use crate::fsm::{FsmEvent, HeadlampState, Operational};
 use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{
     expect_actuation_command, inject_matching_ack, inject_matching_nack, install_with_actuation,
-    ActorGuard,
+    power_on_to_idle, ActorGuard,
 };
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController, VssSignal};
 use ractor::concurrency::Duration;
@@ -17,6 +17,8 @@ const DEFAULT_ACTOR_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[tokio::test]
 async fn scenario_raw_transition_records_are_emitted_in_order() {
+    // Phase 1: PowerOn → PreparingToStart (seq 1), AssembliesReady → Idle (seq 2),
+    // then UpdateRpm(1500) → Driving (seq 3).
     let (tx, mut rx) = mpsc::channel(16);
 
     let runtime_options = VehicleControllerRuntimeOptions {
@@ -40,27 +42,42 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         .send_message(FsmEvent::PowerOn.into())
         .expect("Failed to send PowerOn stimulus");
     actor_ref
+        .send_message(FsmEvent::Internal(Operational::AssembliesReady).into())
+        .expect("Failed to send AssembliesReady");
+    actor_ref
+        .send_message(FsmEvent::UpdateAmbientLux(crate::vehicle_physics::LUX_ON_THRESHOLD + 100).into())
+        .expect("bright lux to prevent LightingUnsafe synthesis in Driving");
+    actor_ref
         .send_message(FsmEvent::UpdateRpm(1500).into())
         .expect("Failed to send UpdateRpm stimulus");
 
     let first = rx.recv().await.expect("Missing first transition record");
     let second = rx.recv().await.expect("Missing second transition record");
+    let third = rx.recv().await.expect("Missing third transition record");
+    // Discard the bright-lux row (seq 4) that guards against DrivingDangerously synthesis.
+    let fourth = rx.recv().await.expect("Missing fourth transition record");
 
     assert_eq!(first.record_seq, 1);
     assert_eq!(first.event, PublishedFsmEvent::PowerOn);
     assert_eq!(first.old_state, PublishedFsmState::Off);
-    assert_eq!(first.next_state, PublishedFsmState::Idle);
-    assert_eq!(first.current_ctx.powertrain.wheel_rpm.front_left, 0);
+    assert_eq!(first.next_state, PublishedFsmState::PreparingToStart);
 
     assert_eq!(second.record_seq, 2);
-    assert_eq!(second.event, PublishedFsmEvent::UpdateRpm(1500));
-    assert_eq!(second.old_state, PublishedFsmState::Idle);
-    assert_eq!(second.next_state, PublishedFsmState::Driving);
-    assert_eq!(second.current_ctx.powertrain.wheel_rpm.front_left, 1500);
+    assert_eq!(second.next_state, PublishedFsmState::Idle);
 
-    // Both records share one run (session epoch) and advance monotonically in wall time.
-    assert_eq!(first.session_epoch_unix_nanos, second.session_epoch_unix_nanos);
-    assert!(second.at_unix >= first.at_unix);
+    // Lux row (seq 3) keeps the FSM in Idle (no state change from bright lux).
+    assert_eq!(third.record_seq, 3);
+
+    // RPM row advances to Driving (seq 4).
+    assert_eq!(fourth.record_seq, 4);
+    assert_eq!(fourth.event, PublishedFsmEvent::UpdateRpm(1500));
+    assert_eq!(fourth.old_state, PublishedFsmState::Idle);
+    assert_eq!(fourth.next_state, PublishedFsmState::Driving);
+    assert_eq!(fourth.current_ctx.powertrain.wheel_rpm.front_left, 1500);
+
+    // All records share one run (session epoch) and advance monotonically in wall time.
+    assert_eq!(first.session_epoch_unix_nanos, fourth.session_epoch_unix_nanos);
+    assert!(fourth.at_unix >= first.at_unix);
 
     let twin_snapshot = actor_ref
         .call(
@@ -71,16 +88,14 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         .expect("Failed to enqueue GetStatus")
         .expect("Actor failed to respond or timed out during GetStatus request");
 
-    // The published context mirrors the persisted actor context on its observable fields
-    // (the projection only swaps Instant anchors for wall-clock Durations).
     let ctx = twin_snapshot.context();
     assert_eq!(
-        second.current_ctx.powertrain.wheel_rpm.front_left,
+        fourth.current_ctx.powertrain.wheel_rpm.front_left,
         ctx.powertrain.wheel_rpm.front_left,
         "emitted current_ctx must match persisted actor context after transition"
     );
-    assert_eq!(second.current_ctx.powertrain.speed_kph, ctx.powertrain.speed_kph);
-    assert_eq!(second.current_ctx.visibility.ambient_lux, ctx.visibility.ambient_lux);
+    assert_eq!(fourth.current_ctx.powertrain.speed_kph, ctx.powertrain.speed_kph);
+    assert_eq!(fourth.current_ctx.visibility.ambient_lux, ctx.visibility.ambient_lux);
 }
 
 #[tokio::test]
@@ -106,10 +121,12 @@ async fn scenario_log_warning_is_routed_to_diagnostic_sink() {
         handle,
     };
 
-    // Drive Off -> Idle -> Driving -> ExtremeOperationWarning (redline), which emits the
-    // speed-threshold LogWarning intent.
+    // Drive Off → PreparingToStart → Idle → Driving → ExtremeOperationWarning (redline),
+    // which emits the speed-threshold LogWarning intent.
+    // Phase 1: inject AssembliesReady to bridge through PreparingToStart.
     for evt in [
         FsmEvent::PowerOn,
+        FsmEvent::Internal(Operational::AssembliesReady),
         FsmEvent::UpdateAmbientLux(crate::vehicle_physics::LUX_ON_THRESHOLD + 100),
         FsmEvent::UpdateRpm(2000),
         FsmEvent::UpdateRpm(7500),
@@ -143,7 +160,8 @@ async fn scenario_actuation_ack_round_trip_via_helper() {
     // transition — the harness standing in for the future actuation child actor.
     let (controller, mut actuation_rx, _guard) = install_with_actuation("ACT-ACK-01", 16).await;
 
-    controller.send_power_on().await.expect("power on");
+    // Phase 1: bridge to Idle before sending lux (lux in PreparingToStart is a no-op).
+    power_on_to_idle(&controller).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -194,7 +212,8 @@ async fn scenario_actuation_ack_surfaces_confirmation_on_diagnostic_sink() {
         handle,
     };
 
-    controller.send_power_on().await.expect("power on");
+    // Phase 1: bridge to Idle before sending lux.
+    power_on_to_idle(&controller).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -228,7 +247,8 @@ async fn scenario_actuation_ack_surfaces_confirmation_on_diagnostic_sink() {
 async fn scenario_actuation_nack_round_trip_via_helper() {
     let (controller, mut actuation_rx, _guard) = install_with_actuation("ACT-NACK-01", 16).await;
 
-    controller.send_power_on().await.expect("power on");
+    // Phase 1: bridge to Idle before sending lux.
+    power_on_to_idle(&controller).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,

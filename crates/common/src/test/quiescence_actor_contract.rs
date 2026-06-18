@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::fsm::{DomainAction, FsmEvent, FsmState, HeadlampState, Operational};
 use crate::published::{PublishedDomainAction, PublishedFsmEvent, PublishedFsmState, PublishedOperational};
+use crate::test::power_on_to_idle;
 use crate::test::ActorGuard;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::twin_runtime::{commit_resolved_turn, ResolvedTurn, ZoneReplies};
@@ -89,6 +90,7 @@ fn given_driving_in_dark_when_commit_resolved_turn_without_zone_reply_then_singl
 
 #[tokio::test]
 async fn given_actor_idle_when_power_on_then_single_ledger_row_and_idle_state() {
+    // Phase 1: PowerOn → PreparingToStart (seq 1), then AssembliesReady → Idle (seq 2).
     let (transition_tx, mut rx) = mpsc::channel(8);
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
@@ -108,17 +110,26 @@ async fn given_actor_idle_when_power_on_then_single_ledger_row_and_idle_state() 
 
     controller.send_power_on().await.expect("power on");
 
-    let record = rx.recv().await.expect("power on ledger row");
-    assert_eq!(record.record_seq, 1);
-    assert_eq!(record.event, PublishedFsmEvent::PowerOn);
-    assert_eq!(record.next_state, PublishedFsmState::Idle);
+    let record_start = rx.recv().await.expect("power on → preparing ledger row");
+    assert_eq!(record_start.record_seq, 1);
+    assert_eq!(record_start.event, PublishedFsmEvent::PowerOn);
+    assert_eq!(record_start.next_state, PublishedFsmState::PreparingToStart);
+
+    controller
+        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
+        .await
+        .expect("assemblies ready");
+
+    let record_idle = rx.recv().await.expect("assemblies ready → idle ledger row");
+    assert_eq!(record_idle.record_seq, 2);
+    assert_eq!(record_idle.next_state, PublishedFsmState::Idle);
 
     let snapshot = controller
         .get_snapshot(Some(ractor::concurrency::Duration::from_millis(250)))
         .await
         .expect("snapshot");
     assert_eq!(*snapshot.current_state(), FsmState::Idle);
-    assert_eq!(snapshot.as_of_seq(), 1);
+    assert_eq!(snapshot.as_of_seq(), 2);
 }
 
 #[tokio::test]
@@ -141,8 +152,10 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_then_two_ledger_rows_
         handle,
     };
 
-    controller.send_power_on().await.expect("power on");
-    let _ = rx.recv().await.expect("power on row");
+    // Phase 1: drain both the PowerOn → PreparingToStart and AssembliesReady → Idle rows.
+    power_on_to_idle(&controller).await;
+    let _ = rx.recv().await.expect("power on → preparing row");
+    let _ = rx.recv().await.expect("assemblies ready → idle row");
 
     crate::test::submit_daylight_ambient(&controller).await;
     let _ = rx.recv().await.expect("bright lux row");

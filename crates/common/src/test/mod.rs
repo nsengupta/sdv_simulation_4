@@ -11,6 +11,9 @@
 mod actor_contract;
 
 #[cfg(test)]
+mod fsm_preparation_contract;
+
+#[cfg(test)]
 mod headlamp_ack_timer_contract;
 
 #[cfg(test)]
@@ -85,11 +88,35 @@ impl<T: ractor::Message> Drop for ActorGuard<T> {
 // reuse the existing public seams (`VehicleControllerRuntimeOptions`, `submit_physical_car_event`).
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::fsm::FsmEvent;
+use crate::fsm::{FsmEvent, FsmState, Operational};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_physics::LUX_ON_THRESHOLD;
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController};
 use tokio::sync::mpsc;
+
+/// Power on and advance past `PreparingToStart` to `Idle` by injecting
+/// `Internal(AssembliesReady)` — the Phase 1 shim for the coordination barrier that
+/// Phase 5 will wire automatically via the `StartAssemblies` action.
+pub async fn power_on_to_idle(controller: &VehicleController) {
+    controller.send_power_on().await.expect("power on");
+    controller
+        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
+        .await
+        .expect("assemblies ready");
+    wait_fsm_state(controller, FsmState::Idle, std::time::Duration::from_millis(500)).await;
+}
+
+/// Power off and advance past `PreparingToStop` to `Off` by injecting
+/// `Internal(AssembliesStopped)` — the Phase 1 shim for the coordination barrier that
+/// Phase 5 will wire automatically via the `StopAssemblies` action.
+pub async fn power_off_to_off(controller: &VehicleController) {
+    controller.send_power_off().await.expect("power off");
+    controller
+        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesStopped))
+        .await
+        .expect("assemblies stopped");
+    wait_fsm_state(controller, FsmState::Off, std::time::Duration::from_millis(500)).await;
+}
 
 /// Bright ambient so operational driving tests do not synthesize `LightingUnsafe` on entry.
 pub async fn submit_daylight_ambient(controller: &VehicleController) {

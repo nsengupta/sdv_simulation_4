@@ -67,9 +67,16 @@ pub fn step(
         actions.push(DomainAction::EnterMode(ActorModeHintFromDomain::Normal));
     }
 
+    // Ledger record: drop internal coordination signals (EnterMode, StartAssemblies,
+    // StopAssemblies). These are control hints consumed by the actor, not domain intents.
     let recorded_actions: Vec<DomainAction> = actions
         .iter()
-        .filter(|action| !matches!(action, DomainAction::EnterMode(_)))
+        .filter(|action| !matches!(
+            action,
+            DomainAction::EnterMode(_)
+                | DomainAction::StartAssemblies
+                | DomainAction::StopAssemblies
+        ))
         .cloned()
         .collect();
 
@@ -95,6 +102,8 @@ fn map_fsm_action(action: FsmAction) -> Option<DomainAction> {
         FsmAction::StopBuzzer => Some(DomainAction::StopBuzzer),
         FsmAction::PublishStateSync => Some(DomainAction::PublishStateSync),
         FsmAction::LogWarning(msg) => Some(DomainAction::LogWarning(msg)),
+        FsmAction::StartAssemblies => Some(DomainAction::StartAssemblies),
+        FsmAction::StopAssemblies => Some(DomainAction::StopAssemblies),
         FsmAction::None => None,
     }
 }

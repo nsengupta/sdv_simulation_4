@@ -15,11 +15,15 @@ pub const ID_RPM:   u32 = 0x124;
 #[serde(rename_all = "snake_case")]
 pub enum VehicleState {
     Off,
+    /// Assemblies are starting up; the car is not yet in `Idle`.
+    PreparingToStart,
     Idle,
     Driving,
     #[serde(alias = "warning")]
     ExtremeOperationWarning,
     Critical,
+    /// Assemblies are shutting down; the car has not yet reached `Off`.
+    PreparingToStop,
 }
 impl Default for VehicleState {
     fn default() -> Self {

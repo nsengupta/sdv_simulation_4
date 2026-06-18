@@ -1,7 +1,7 @@
 //! Unit tests for the FSM step contract (`step`).
 
 use crate::digital_twin::{verify_state_laws, DigitalTwinCar, DigitalTwinCarError};
-use crate::fsm::{DomainAction, FsmEvent, FsmState};
+use crate::fsm::{DomainAction, FsmEvent, FsmState, Operational};
 use crate::twin_runtime::twin_turn;
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{
@@ -114,11 +114,13 @@ fn test_step_standard_commute_flow() {
         .expect("non-blank identity");
 
     let sequence = vec![
-        (FsmEvent::PowerOn, FsmState::Idle),
+        (FsmEvent::PowerOn, FsmState::PreparingToStart),
+        (FsmEvent::Internal(Operational::AssembliesReady), FsmState::Idle),
         (FsmEvent::UpdateRpm(1500), FsmState::Driving),
         (FsmEvent::UpdateRpm(1300), FsmState::Driving),
         (FsmEvent::UpdateRpm(0), FsmState::Idle),
-        (FsmEvent::PowerOff, FsmState::Off),
+        (FsmEvent::PowerOff, FsmState::PreparingToStop),
+        (FsmEvent::Internal(Operational::AssembliesStopped), FsmState::Off),
     ];
 
     for (event, expected_state) in sequence {
@@ -138,8 +140,10 @@ fn test_state_laws_hold_over_a_legal_journey_and_records_carry_intents() {
     let mut ctx = valid_twin_context();
     let mut reached_warning = false;
 
+    // Phase 1: PowerOn bridges via PreparingToStart before Idle.
     for event in [
         FsmEvent::PowerOn,
+        FsmEvent::Internal(Operational::AssembliesReady),
         FsmEvent::UpdateRpm(1500),
         FsmEvent::UpdateRpm(5600),
     ] {

@@ -84,6 +84,7 @@ fn event_color(event: &PublishedFsmEvent) -> &'static str {
 fn next_state_color(state: &PublishedFsmState) -> &'static str {
     match state {
         PublishedFsmState::Off => ansi::DIM,
+        PublishedFsmState::PreparingToStart | PublishedFsmState::PreparingToStop => ansi::CYAN,
         PublishedFsmState::Idle => ansi::YELLOW,
         PublishedFsmState::Driving => ansi::GREEN,
         PublishedFsmState::DrivingDangerously => ansi::MAGENTA,

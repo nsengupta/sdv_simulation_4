@@ -2,7 +2,7 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::twin_runtime::controller::virtual_car_actor::VirtualCarActor;
-use crate::fsm::{FsmEvent, FsmState};
+use crate::fsm::{FsmEvent, FsmState, Operational};
 use crate::test::ActorGuard;
 use ractor::concurrency::Duration;
 use ractor::Actor;
@@ -82,8 +82,14 @@ async fn scenario_power_on_then_drive_rpm_enters_driving() {
         handle,
     };
 
+    // Phase 1: bridge PreparingToStart → Idle via AssembliesReady before proceeding.
     actor
         .send_message(DigitalTwinCarVocabulary::from(FsmEvent::PowerOn))
+        .unwrap();
+    actor
+        .send_message(DigitalTwinCarVocabulary::from(FsmEvent::Internal(
+            Operational::AssembliesReady,
+        )))
         .unwrap();
     actor
         .send_message(DigitalTwinCarVocabulary::from(FsmEvent::UpdateAmbientLux(
@@ -139,8 +145,14 @@ async fn scenario_redline_rpm_from_driving_enters_warning() {
         handle,
     };
 
+    // Phase 1: bridge PreparingToStart → Idle via AssembliesReady.
     actor
         .send_message(DigitalTwinCarVocabulary::from(FsmEvent::PowerOn))
+        .unwrap();
+    actor
+        .send_message(DigitalTwinCarVocabulary::from(FsmEvent::Internal(
+            Operational::AssembliesReady,
+        )))
         .unwrap();
     actor
         .send_message(DigitalTwinCarVocabulary::from(FsmEvent::UpdateAmbientLux(
@@ -180,9 +192,13 @@ async fn scenario_get_status_after_power_on_reports_idle() {
         handle,
     };
 
+    // Phase 1: PowerOn → PreparingToStart; inject AssembliesReady to advance to Idle.
     actor_ref
         .send_message(FsmEvent::PowerOn.into())
         .expect("Failed to send PowerOn stimulus");
+    actor_ref
+        .send_message(FsmEvent::Internal(Operational::AssembliesReady).into())
+        .expect("Failed to send AssembliesReady");
 
     let twin_snapshot = actor_ref
         .call(
@@ -196,7 +212,7 @@ async fn scenario_get_status_after_power_on_reports_idle() {
     assert_eq!(
         *twin_snapshot.current_state(),
         FsmState::Idle,
-        "Car should be in Idle state after PowerOn"
+        "Car should be in Idle state after PowerOn + AssembliesReady"
     );
 
     twin_snapshot

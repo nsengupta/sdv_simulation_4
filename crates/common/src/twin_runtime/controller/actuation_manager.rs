@@ -121,6 +121,9 @@ impl ActuationManager for DefaultActuationManager {
                 }
             }
             DomainAction::EnterMode(_) => {}
+            // Phase 1 stub: StartAssemblies/StopAssemblies will be wired in Phase 5.
+            // They fall through here as no-ops until the actor handles them explicitly.
+            DomainAction::StartAssemblies | DomainAction::StopAssemblies => {}
         }
 
         Ok(())

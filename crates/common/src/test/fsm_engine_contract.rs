@@ -1,6 +1,6 @@
 //! Unit tests for the FSM spec (`transition` / `output`).
 
-use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState};
+use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, Operational};
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{
     extreme_operation_active, EXTREME_OPERATION_WARNING_MESSAGE, RPM_EXTREME_OPERATION_THRESHOLD,
@@ -77,7 +77,18 @@ fn test_transition_high_speed_alone_emits_speed_threshold_signal_only() {
 fn test_transition_standard_commute_flow() {
     let ctx = valid_twin_context();
     let now = Instant::now();
+
+    // Off + PowerOn → PreparingToStart (coordinator barrier starts)
     let mut state = transition(&FsmState::Off, &FsmEvent::PowerOn, &ctx, now);
+    assert_eq!(state.next_state, FsmState::PreparingToStart);
+
+    // PreparingToStart + AssembliesReady → Idle
+    state = transition(
+        &state.next_state,
+        &FsmEvent::Internal(Operational::AssembliesReady),
+        &ctx,
+        now,
+    );
     assert_eq!(state.next_state, FsmState::Idle);
 
     let driving_ctx = ctx_with_rpm(1500);
@@ -92,7 +103,17 @@ fn test_transition_standard_commute_flow() {
     state = transition(&state.next_state, &FsmEvent::UpdateRpm(0), &stopped_ctx, now);
     assert_eq!(state.next_state, FsmState::Idle);
 
+    // Idle + PowerOff → PreparingToStop (shutdown coordinator barrier starts)
     state = transition(&state.next_state, &FsmEvent::PowerOff, &stopped_ctx, now);
+    assert_eq!(state.next_state, FsmState::PreparingToStop);
+
+    // PreparingToStop + AssembliesStopped → Off
+    state = transition(
+        &state.next_state,
+        &FsmEvent::Internal(Operational::AssembliesStopped),
+        &stopped_ctx,
+        now,
+    );
     assert_eq!(state.next_state, FsmState::Off);
 }
 

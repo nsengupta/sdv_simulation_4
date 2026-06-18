@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::fsm::{
-    ActorModeHintFromDomain, DomainAction, FsmEvent, FsmState, RawTransitionRecord,
+    DomainAction, FsmEvent, FsmState, RawTransitionRecord,
 };
 use crate::vehicle_state::{
     FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, HeadlampContext, HeadlampState,
@@ -115,12 +115,16 @@ impl From<&FrontHeadlampIncompleteCause> for PublishedFrontHeadlampIncompleteCau
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedOperational {
     LightingUnsafe,
+    AssembliesReady,
+    AssembliesStopped,
 }
 
 impl From<&crate::fsm::Operational> for PublishedOperational {
     fn from(op: &crate::fsm::Operational) -> Self {
         match op {
             crate::fsm::Operational::LightingUnsafe => Self::LightingUnsafe,
+            crate::fsm::Operational::AssembliesReady => Self::AssembliesReady,
+            crate::fsm::Operational::AssembliesStopped => Self::AssembliesStopped,
         }
     }
 }
@@ -162,8 +166,9 @@ impl From<&FsmEvent> for PublishedFsmEvent {
     }
 }
 
-/// World-facing domain intents. Mirrors [`DomainAction`] **minus** `EnterMode`, which is a runtime
-/// control hint (not a domain intent) and is already excluded from the recorded action list (WI-1).
+/// World-facing domain intents. Mirrors [`DomainAction`] **minus** runtime control hints
+/// (`EnterMode`, `StartAssemblies`, `StopAssemblies`), which are already excluded from the
+/// recorded action list (WI-1) and carry no ledger-level meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedDomainAction {
     StartBuzzer,
@@ -175,7 +180,7 @@ pub enum PublishedDomainAction {
 }
 
 impl PublishedDomainAction {
-    /// Project a domain action, dropping the non-domain `EnterMode` control hint.
+    /// Project a domain action, dropping internal coordination hints.
     fn project(action: &DomainAction) -> Option<Self> {
         match action {
             DomainAction::StartBuzzer => Some(Self::StartBuzzer),
@@ -184,8 +189,10 @@ impl PublishedDomainAction {
             DomainAction::LogWarning(msg) => Some(Self::LogWarning(msg.clone())),
             DomainAction::RequestFrontHeadlampOn => Some(Self::RequestFrontHeadlampOn),
             DomainAction::RequestFrontHeadlampOff => Some(Self::RequestFrontHeadlampOff),
-            DomainAction::EnterMode(ActorModeHintFromDomain::Normal)
-            | DomainAction::EnterMode(ActorModeHintFromDomain::Transitioning) => None,
+            // Internal coordination signals: not domain intents, not ledger-visible.
+            DomainAction::EnterMode(_)
+            | DomainAction::StartAssemblies
+            | DomainAction::StopAssemblies => None,
         }
     }
 }
@@ -193,6 +200,7 @@ impl PublishedDomainAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedFsmState {
     Off,
+    PreparingToStart,
     Idle,
     Driving,
     DrivingDangerously,
@@ -200,6 +208,7 @@ pub enum PublishedFsmState {
     ExtremeOperationWarning {
         began_at_unix: Duration,
     },
+    PreparingToStop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,12 +312,14 @@ impl SessionEpoch {
     fn fsm_state(&self, state: &FsmState) -> PublishedFsmState {
         match state {
             FsmState::Off => PublishedFsmState::Off,
+            FsmState::PreparingToStart => PublishedFsmState::PreparingToStart,
             FsmState::Idle => PublishedFsmState::Idle,
             FsmState::Driving => PublishedFsmState::Driving,
             FsmState::DrivingDangerously => PublishedFsmState::DrivingDangerously,
             FsmState::ExtremeOperationWarning(at) => PublishedFsmState::ExtremeOperationWarning {
                 began_at_unix: self.project(*at),
             },
+            FsmState::PreparingToStop => PublishedFsmState::PreparingToStop,
         }
     }
 

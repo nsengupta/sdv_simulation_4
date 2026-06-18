@@ -1,4 +1,4 @@
-use super::machineries::{FsmAction, FsmEvent, FsmState};
+use super::machineries::{FsmAction, FsmEvent, FsmState, Operational};
 use crate::vehicle_state::{HeadlampState, VehicleContext};
 use crate::vehicle_physics::{
     extreme_operation_active, speed_threshold_exceeded, EXTREME_OPERATION_WARNING_MESSAGE,
@@ -7,15 +7,19 @@ use crate::vehicle_physics::{
 };
 use std::time::{Duration, Instant};
 
-/// Operational mode transition table (Off / Idle / Driving / ExtremeOperationWarning).
+/// Operational mode transition table.
 ///
 /// Human table:
-/// - Off + PowerOn(healthy ctx) -> Idle
-/// - Idle + PowerOff -> Off
+/// - Off + PowerOn(healthy ctx) -> PreparingToStart
+/// - PreparingToStart + Internal(AssembliesReady) -> Idle
+/// - PreparingToStart + anything else -> PreparingToStart (self-loop, no actions)
+/// - Idle + PowerOff -> PreparingToStop
 /// - Idle + UpdateRpm(rpm > [`RPM_DRIVING_THRESHOLD`]) -> Driving
 /// - Driving + derived ctx.powertrain.speed_kph == 0 -> Idle (any event, after kinematic refresh in `step`)
 /// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
 /// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
+/// - PreparingToStop + Internal(AssembliesStopped) -> Off
+/// - PreparingToStop + anything else -> PreparingToStop (self-loop, no actions)
 /// - Everything else -> stay in current state
 ///
 /// # Purity
@@ -47,19 +51,27 @@ pub fn transition(
 
     match current_state {
         Off => match event {
-            PowerOn if current_ctx.is_healthy() => TransitionResult { next_state: Idle, note: None },
+            PowerOn if current_ctx.is_healthy() => {
+                TransitionResult { next_state: PreparingToStart, note: None }
+            }
             PowerOff => TransitionResult { next_state: Off, note: Some(TransitionNote::RejectedPowerOff) },
             _ => TransitionResult { next_state: Off, note: None },
         },
+        PreparingToStart => match event {
+            Internal(Operational::AssembliesReady) => {
+                TransitionResult { next_state: Idle, note: None }
+            }
+            _ => TransitionResult { next_state: PreparingToStart, note: None },
+        },
         Idle => match event {
-            PowerOff => TransitionResult { next_state: Off, note: None },
+            PowerOff => TransitionResult { next_state: PreparingToStop, note: None },
             UpdateRpm(rpm) if *rpm > RPM_DRIVING_THRESHOLD => {
                 TransitionResult { next_state: Driving, note: None }
             }
             _ => TransitionResult { next_state: Idle, note: None },
         },
         Driving => match event {
-            Internal(crate::fsm::Operational::LightingUnsafe) => TransitionResult {
+            Internal(Operational::LightingUnsafe) => TransitionResult {
                 next_state: DrivingDangerously,
                 note: None,
             },
@@ -97,6 +109,12 @@ pub fn transition(
             PowerOff => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: Some(TransitionNote::RejectedPowerOff) },
             _ => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: None },
         },
+        PreparingToStop => match event {
+            Internal(Operational::AssembliesStopped) => {
+                TransitionResult { next_state: Off, note: None }
+            }
+            _ => TransitionResult { next_state: PreparingToStop, note: None },
+        },
     }
 }
 
@@ -113,6 +131,8 @@ pub fn output(old_state: &FsmState, new_state: &FsmState, ctx: &VehicleContext) 
     use FsmState::*;
 
     match (old_state, new_state) {
+        (Off, PreparingToStart) => vec![StartAssemblies],
+        (Idle, PreparingToStop) => vec![StopAssemblies],
         (Driving, DrivingDangerously) => vec![StartBuzzer],
         (DrivingDangerously, Driving) | (DrivingDangerously, Idle) => vec![StopBuzzer],
         (Driving, ExtremeOperationWarning(_)) => {

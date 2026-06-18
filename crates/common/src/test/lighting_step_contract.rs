@@ -469,6 +469,9 @@ fn given_lights_off_when_actuation_incomplete_on_then_no_recovery() {
 
 #[test]
 fn given_idle_on_requested_when_power_off_then_primary_off_and_lighting_cleared() {
+    // Phase 1: PowerOff now moves to PreparingToStop (not Off directly). The BecomeOff
+    // coordination barrier — and with it the headlamp reset — is wired in Phase 5. Until
+    // then, the headlamp stays in its current state while the FSM holds in PreparingToStop.
     let t0 = Instant::now();
     let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 100);
     let result = twin_turn(
@@ -477,7 +480,7 @@ fn given_idle_on_requested_when_power_off_then_primary_off_and_lighting_cleared(
         &FsmEvent::PowerOff,
         t0,
     );
-    assert_eq!(result.next_state, FsmState::Off);
-    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
-    assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
+    assert_eq!(result.next_state, FsmState::PreparingToStop);
+    // Headlamp reset via BecomeOff is Phase 5 work; in Phase 1 the state is unchanged.
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::OnRequested);
 }

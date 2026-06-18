@@ -7,7 +7,7 @@ use crate::fsm::{FsmEvent, FsmState, HeadlampState};
 use crate::published::{
     PublishedDomainAction, PublishedFsmEvent, PublishedFsmState, PublishedOperational,
 };
-use crate::test::{submit_daylight_ambient, wait_fsm_state, wait_headlamp_state, ActorGuard};
+use crate::test::{power_on_to_idle, submit_daylight_ambient, wait_fsm_state, wait_headlamp_state, ActorGuard};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_physics::{FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD};
 use crate::{PhysicalCarVocabulary, VehicleController, VssSignal};
@@ -33,8 +33,10 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_without_timer_tick_th
         handle,
     };
 
-    controller.send_power_on().await.expect("power on");
-    let _ = rx.recv().await.expect("power on row");
+    // Phase 1: bridge to Idle, then drain the two startup ledger rows.
+    power_on_to_idle(&controller).await;
+    let _ = rx.recv().await.expect("power on → preparing row");
+    let _ = rx.recv().await.expect("assemblies ready → idle row");
 
     submit_daylight_ambient(&controller).await;
     let _ = rx.recv().await.expect("bright lux row");
@@ -113,8 +115,10 @@ async fn given_actor_on_requested_when_ack_before_deadline_then_no_spontaneous_i
         handle,
     };
 
-    controller.send_power_on().await.expect("power on");
-    let _ = rx.recv().await.expect("power on row");
+    // Phase 1: bridge to Idle, drain startup rows.
+    power_on_to_idle(&controller).await;
+    let _ = rx.recv().await.expect("power on → preparing row");
+    let _ = rx.recv().await.expect("assemblies ready → idle row");
 
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
