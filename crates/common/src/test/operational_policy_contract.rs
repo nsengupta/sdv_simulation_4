@@ -96,11 +96,10 @@ fn given_driving_in_dark_when_on_requested_then_no_lighting_unsafe_internal_hop(
 }
 
 fn ctx_driving_dangerous_after_failed_on() -> VehicleContext {
-    let t0 = Instant::now();
     let mut ctx = ctx_driving_in_dark();
-    ctx.headlamp.state = HeadlampState::Off;
+    // After a failed ON attempt (Phase 2): assembly still active but lamp dark → Ready.
+    ctx.headlamp.state = HeadlampState::Ready;
     ctx.headlamp.ack_pending_since = None;
-    let _ = t0;
     ctx
 }
 
@@ -127,7 +126,7 @@ fn given_driving_in_dark_when_on_request_times_out_then_two_hop_quiescence_enter
     ));
     assert_eq!(
         result.hops[0].result.modified_ctx.headlamp.state,
-        HeadlampState::Off
+        HeadlampState::Ready
     );
     assert!(
         result.hops[0]

@@ -66,6 +66,7 @@ impl SessionEpoch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedHeadlampState {
     Off,
+    Ready,
     OnRequested,
     On,
     OffRequested,
@@ -75,6 +76,7 @@ impl From<&HeadlampState> for PublishedHeadlampState {
     fn from(s: &HeadlampState) -> Self {
         match s {
             HeadlampState::Off => Self::Off,
+            HeadlampState::Ready => Self::Ready,
             HeadlampState::OnRequested => Self::OnRequested,
             HeadlampState::On => Self::On,
             HeadlampState::OffRequested => Self::OffRequested,

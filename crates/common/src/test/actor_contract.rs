@@ -5,9 +5,10 @@ use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntim
 use crate::fsm::{FsmEvent, HeadlampState, Operational};
 use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{
-    expect_actuation_command, inject_matching_ack, inject_matching_nack, install_with_actuation,
+    expect_actuation_command, inject_matching_ack, inject_matching_nack,
     power_on_to_idle, ActorGuard,
 };
+use crate::vehicle_state::HeadlampContext;
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController, VssSignal};
 use ractor::concurrency::Duration;
 use tokio::sync::mpsc;
@@ -54,7 +55,6 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
     let first = rx.recv().await.expect("Missing first transition record");
     let second = rx.recv().await.expect("Missing second transition record");
     let third = rx.recv().await.expect("Missing third transition record");
-    // Discard the bright-lux row (seq 4) that guards against DrivingDangerously synthesis.
     let fourth = rx.recv().await.expect("Missing fourth transition record");
 
     assert_eq!(first.record_seq, 1);
@@ -158,7 +158,24 @@ async fn scenario_log_warning_is_routed_to_diagnostic_sink() {
 async fn scenario_actuation_ack_round_trip_via_helper() {
     // WI-6 (Q2): observe the outbound command, inject the matching ack, observe the resulting
     // transition — the harness standing in for the future actuation child actor.
-    let (controller, mut actuation_rx, _guard) = install_with_actuation("ACT-ACK-01", 16).await;
+    let (actuation_tx, mut actuation_rx) = mpsc::channel(16);
+    let runtime_options = VehicleControllerRuntimeOptions {
+        actuation_command_tx: Some(actuation_tx),
+        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
+        ..Default::default()
+    };
+    let (controller, handle) =
+        VehicleController::install_and_start_with_options("ACT-ACK-01".to_string(), runtime_options)
+            .await
+            .expect("start actor");
+    let _guard = ActorGuard {
+        addr: controller.get_actor_ref().clone(),
+        handle,
+    };
 
     // Phase 1: bridge to Idle before sending lux (lux in PreparingToStart is a no-op).
     power_on_to_idle(&controller).await;
@@ -198,6 +215,11 @@ async fn scenario_actuation_ack_surfaces_confirmation_on_diagnostic_sink() {
     let runtime_options = VehicleControllerRuntimeOptions {
         diagnostic_tx: Some(diag_tx),
         actuation_command_tx: Some(actuation_tx),
+        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -245,7 +267,24 @@ async fn scenario_actuation_ack_surfaces_confirmation_on_diagnostic_sink() {
 
 #[tokio::test]
 async fn scenario_actuation_nack_round_trip_via_helper() {
-    let (controller, mut actuation_rx, _guard) = install_with_actuation("ACT-NACK-01", 16).await;
+    let (actuation_tx, mut actuation_rx) = mpsc::channel(16);
+    let runtime_options = VehicleControllerRuntimeOptions {
+        actuation_command_tx: Some(actuation_tx),
+        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
+        ..Default::default()
+    };
+    let (controller, handle) =
+        VehicleController::install_and_start_with_options("ACT-NACK-01".to_string(), runtime_options)
+            .await
+            .expect("start actor");
+    let _guard = ActorGuard {
+        addr: controller.get_actor_ref().clone(),
+        handle,
+    };
 
     // Phase 1: bridge to Idle before sending lux.
     power_on_to_idle(&controller).await;
@@ -263,14 +302,14 @@ async fn scenario_actuation_nack_round_trip_via_helper() {
     ));
 
     inject_matching_nack(&controller, &command).await;
-    crate::test::wait_headlamp_state(&controller, HeadlampState::Off, Duration::from_millis(250))
+    // Phase 2: NACK on ON request → ActuationIncomplete(On) → Ready (assembly active, lamp dark).
+    crate::test::wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(250))
         .await;
 
-    // A NACK on the ON request leaves the headlamp Off (the request did not complete).
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Ready);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }

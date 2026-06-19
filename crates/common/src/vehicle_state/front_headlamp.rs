@@ -13,17 +13,33 @@ use crate::vehicle_physics::{
 // --- L1 alphabet (ADR-5) ---
 
 /// Snapshot — what the headlamp zone **IS**.
+///
+/// Lifecycle:
+/// - `Off`          — assembly not started; ignores all lux events.
+/// - `Ready`        — assembly active, physical lamp dark; lux triggers `OnRequested`.
+/// - `OnRequested`  — ON command in flight; waiting for `AckOn`.
+/// - `On`           — physical lamp confirmed on.
+/// - `OffRequested` — OFF command in flight; waiting for `AckOff`.
+///
+/// `BecomeOn` drives `Off → Ready`; `BecomeOff` drives `Ready | On → Off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadlampState {
     Off,
+    Ready,
     OnRequested,
     On,
     OffRequested,
 }
 
 /// Inputs — L4 demux feeds these (from [`crate::fsm::FsmEvent`] today; `TwinIngress` per ADR-6 later).
+///
+/// Lifecycle messages (Phase 2):
+/// - `BecomeOn`  — Brain tells the assembly to start; drives `Off → Ready`.
+/// - `BecomeOff` — Brain tells the assembly to stop;  drives `Ready | On → Off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadlampMessage {
+    BecomeOn,
+    BecomeOff,
     AmbientLux(u16),
     AckOn,
     AckOff,
@@ -113,6 +129,8 @@ impl HeadlampContext {
     ) -> Vec<HeadlampOutcome> {
         let mut outcomes = Vec::new();
         match msg {
+            HeadlampMessage::BecomeOn => self.apply_become_on(),
+            HeadlampMessage::BecomeOff => self.apply_become_off(),
             HeadlampMessage::AmbientLux(lux) => {
                 self.evaluate_lux(prev_state, lux, now, &mut outcomes);
             }
@@ -127,17 +145,29 @@ impl HeadlampContext {
         outcomes
     }
 
+    fn apply_become_on(&mut self) {
+        self.state = HeadlampState::Ready;
+        self.ack_pending_since = None;
+    }
+
+    fn apply_become_off(&mut self) {
+        self.state = HeadlampState::Off;
+        self.ack_pending_since = None;
+    }
+
     fn apply_on_ack(&mut self) {
         self.state = HeadlampState::On;
         self.ack_pending_since = None;
     }
 
+    /// AckOff returns to `Ready` (assembly remains active, physical lamp is now dark).
     fn apply_off_ack(&mut self) {
-        self.state = HeadlampState::Off;
+        self.state = HeadlampState::Ready;
         self.ack_pending_since = None;
     }
 
     /// Lux-driven ON/OFF when crossing thresholds from a settled state (`prev_state` = pre-event).
+    /// Only `Ready` (not `Off`) can trigger `OnRequested`; `Off` means the assembly is not started.
     fn evaluate_lux(
         &mut self,
         prev_state: HeadlampState,
@@ -146,7 +176,7 @@ impl HeadlampContext {
         outcomes: &mut Vec<HeadlampOutcome>,
     ) {
         match prev_state {
-            HeadlampState::Off if lux <= LUX_ON_THRESHOLD => {
+            HeadlampState::Ready if lux <= LUX_ON_THRESHOLD => {
                 self.state = HeadlampState::OnRequested;
                 self.ack_pending_since = Some(now);
                 outcomes.push(HeadlampOutcome::RequestOn);
@@ -211,7 +241,8 @@ impl HeadlampContext {
         let warning = front_headlamp_log::alert_incomplete(direction, cause);
         match direction {
             FrontHeadlampSwitchDirection::On => {
-                self.state = HeadlampState::Off;
+                // ON attempt failed: lamp is still dark but assembly is active → Ready.
+                self.state = HeadlampState::Ready;
                 outcomes.push(HeadlampOutcome::LogWarning(warning));
             }
             FrontHeadlampSwitchDirection::Off => {

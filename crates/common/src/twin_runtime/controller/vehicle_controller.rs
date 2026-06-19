@@ -29,6 +29,10 @@ pub struct VehicleControllerRuntimeOptions {
     pub actuation_command_tx: Option<tokio::sync::mpsc::Sender<ActuationCommand>>,
     pub diagnostic_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::diagnostic::DiagnosticMessage>>,
     pub transition_tx: Option<tokio::sync::mpsc::Sender<PublishedTransitionRecord>>,
+    /// Override the headlamp zone's initial context (both brain snapshot and twinlet state).
+    /// Used in tests to start the assembly in a known state (e.g. `Ready`) without a
+    /// `BecomeOn` round-trip — Phase 5 will wire that automatically.
+    pub initial_headlamp_ctx: Option<crate::vehicle_state::HeadlampContext>,
     /// Contract tests: headlamp twinlet ignores tells (exercises tell-back timeout path).
     #[doc(hidden)]
     pub test_silent_headlamp: bool,
@@ -41,6 +45,7 @@ impl Default for VehicleControllerRuntimeOptions {
             actuation_command_tx: None,
             diagnostic_tx: None,
             transition_tx: None,
+            initial_headlamp_ctx: None,
             test_silent_headlamp: false,
         }
     }

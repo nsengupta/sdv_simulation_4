@@ -10,6 +10,7 @@ use crate::published::{
 use crate::test::{power_on_to_idle, submit_daylight_ambient, wait_fsm_state, wait_headlamp_state, ActorGuard};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_physics::{FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD};
+use crate::vehicle_state::HeadlampContext;
 use crate::{PhysicalCarVocabulary, VehicleController, VssSignal};
 use tokio::sync::mpsc;
 
@@ -19,6 +20,11 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_without_timer_tick_th
     let (transition_tx, mut rx) = mpsc::channel(16);
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
+        // Phase 2: start in Ready so low-lux events trigger OnRequested.
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -91,7 +97,8 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_without_timer_tick_th
         Duration::from_secs(1),
     )
     .await;
-    wait_headlamp_state(&controller, HeadlampState::Off, Duration::from_secs(1)).await;
+    // Phase 2: ActuationIncomplete(On) recovers to Ready (assembly active), not Off.
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_secs(1)).await;
 }
 
 #[tokio::test]
@@ -101,6 +108,11 @@ async fn given_actor_on_requested_when_ack_before_deadline_then_no_spontaneous_i
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
         actuation_command_tx: Some(actuation_tx),
+        // Phase 2: start in Ready so low-lux events trigger OnRequested.
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 

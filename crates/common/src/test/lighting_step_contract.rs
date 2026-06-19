@@ -32,7 +32,8 @@ fn ctx_with_pending_headlamp(state: HeadlampState, since: Instant, ambient_lux: 
 #[test]
 fn given_lights_off_when_lux_below_on_threshold_then_requests_front_headlamp_on() {
     let current_state = FsmState::Idle;
-    let current_ctx = valid_twin_context();
+    // Assembly is active (Ready) but physical lamp is off; low lux should command it on.
+    let current_ctx = ctx_with_headlamp_state(HeadlampState::Ready);
 
     // Dim side of emulator jitter band (~815) is below LUX_ON_THRESHOLD (840).
     let result = twin_turn(
@@ -85,9 +86,10 @@ fn given_lights_on_when_lux_above_off_threshold_then_requests_front_headlamp_off
 
 #[test]
 fn given_lights_off_when_lux_at_on_threshold_then_requests_front_headlamp_on() {
+    // Assembly active (Ready): lux at the exact ON threshold must trigger the ON request.
     let result = twin_turn(
         &FsmState::Idle,
-        &valid_twin_context(),
+        &ctx_with_headlamp_state(HeadlampState::Ready),
         &FsmEvent::UpdateAmbientLux(LUX_ON_THRESHOLD),
         Instant::now(),
     );
@@ -101,9 +103,10 @@ fn given_lights_off_when_lux_at_on_threshold_then_requests_front_headlamp_on() {
 
 #[test]
 fn given_lights_off_when_lux_in_deadband_then_does_not_request_front_headlamp_on() {
+    // Assembly active (Ready) but lux is above ON threshold — no ON command should fire.
     let result = twin_turn(
         &FsmState::Idle,
-        &valid_twin_context(),
+        &ctx_with_headlamp_state(HeadlampState::Ready),
         &FsmEvent::UpdateAmbientLux(LUX_ON_THRESHOLD + 10),
         Instant::now(),
     );
@@ -111,7 +114,7 @@ fn given_lights_off_when_lux_in_deadband_then_does_not_request_front_headlamp_on
     assert!(!result
         .actions
         .contains(&DomainAction::RequestFrontHeadlampOn));
-    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Ready);
 }
 
 #[test]
@@ -195,7 +198,8 @@ fn given_on_requested_when_ack_on_then_transitions_to_on() {
 }
 
 #[test]
-fn given_off_requested_when_ack_off_then_transitions_to_off() {
+fn given_off_requested_when_ack_off_then_transitions_to_ready() {
+    // AckOff returns to Ready (assembly active, physical lamp dark) not Off (assembly stopped).
     let current_ctx = ctx_with_headlamp_state(HeadlampState::OffRequested);
     let result = twin_turn(
         &FsmState::Driving,
@@ -203,7 +207,7 @@ fn given_off_requested_when_ack_off_then_transitions_to_off() {
         &FsmEvent::FrontHeadlampOffAck,
         Instant::now(),
     );
-    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Ready);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
 }
 
@@ -245,7 +249,8 @@ fn given_off_requested_when_timer_tick_before_ack_deadline_then_stays_pending() 
 
 /// `now - since == FRONT_HEADLAMP_ON_ACK_WAIT` satisfies `>=` in `step` — timeout fires.
 #[test]
-fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() {
+fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_ready() {
+    // Timeout on an ON attempt: lamp stays dark but assembly is active → Ready.
     let t0 = Instant::now();
     let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 20);
     let result = twin_turn(
@@ -254,7 +259,7 @@ fn given_on_requested_when_timer_tick_at_exact_ack_wait_then_times_out_to_off() 
         &FsmEvent::TimerTick,
         t0 + FRONT_HEADLAMP_ON_ACK_WAIT,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Ready);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert!(result.actions.iter().any(|a| matches!(
         a,
@@ -293,7 +298,7 @@ fn given_on_requested_second_timer_tick_after_timeout_does_not_double_warn() {
         &FsmEvent::TimerTick,
         deadline,
     );
-    assert_eq!(after_timeout.modified_ctx.headlamp.state, HeadlampState::Off);
+    assert_eq!(after_timeout.modified_ctx.headlamp.state, HeadlampState::Ready);
     assert_eq!(
         after_timeout
             .actions
@@ -350,7 +355,8 @@ fn given_off_requested_second_timer_tick_after_timeout_does_not_double_warn() {
 }
 
 #[test]
-fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() {
+fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_ready() {
+    // Failed ON attempt: lamp dark but assembly still active → Ready, not Off.
     let t0 = Instant::now();
     let current_ctx = ctx_with_pending_headlamp(HeadlampState::OnRequested, t0, 100);
     let result = twin_turn(
@@ -362,7 +368,7 @@ fn given_on_requested_when_actuation_incomplete_timed_out_then_recover_to_off() 
         },
         t0,
     );
-    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Off);
+    assert_eq!(result.modified_ctx.headlamp.state, HeadlampState::Ready);
     assert!(result.modified_ctx.headlamp.ack_pending_since.is_none());
     assert_eq!(
         result

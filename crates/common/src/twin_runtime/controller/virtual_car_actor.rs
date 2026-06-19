@@ -174,7 +174,10 @@ impl Actor for VirtualCarActor {
                 Arc::new(manager)
             };
 
-        let initial_ctx = VehicleContext::default();
+        let mut initial_ctx = VehicleContext::default();
+        if let Some(hl_ctx) = args.runtime_options.initial_headlamp_ctx.clone() {
+            initial_ctx.headlamp = hl_ctx;
+        }
         let (headlamp_actor, _) = ractor::spawn::<HeadlampActor>(HeadlampActorState::new(
             initial_ctx.headlamp.clone(),
             args.runtime_options.test_silent_headlamp,
@@ -791,14 +794,15 @@ impl VirtualCarActor {
 
 /// Classify a headlamp state change as a positive ACK settle, if any.
 /// Probes the domain state before and after the step: if `OnRequested→On` or
-/// `OffRequested→Off`, the actuation completed positively.
+/// `OffRequested→Ready`, the actuation completed positively.
+/// (`AckOff` now lands in `Ready`, not `Off` — assembly remains active after the lamp turns off.)
 fn front_headlamp_confirmed_direction(
     before: HeadlampState,
     after: HeadlampState,
 ) -> Option<FrontHeadlampSwitchDirection> {
     match (before, after) {
         (HeadlampState::OnRequested, HeadlampState::On) => Some(FrontHeadlampSwitchDirection::On),
-        (HeadlampState::OffRequested, HeadlampState::Off) => Some(FrontHeadlampSwitchDirection::Off),
+        (HeadlampState::OffRequested, HeadlampState::Ready) => Some(FrontHeadlampSwitchDirection::Off),
         _ => None,
     }
 }

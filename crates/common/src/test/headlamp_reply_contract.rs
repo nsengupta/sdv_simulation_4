@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::fsm::HeadlampState;
+use crate::fsm::{FsmEvent, HeadlampState, Operational};
 use crate::published::{PublishedHeadlampContext, PublishedHeadlampState};
 use crate::test::{expect_actuation_command, inject_matching_ack, ActorGuard};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
@@ -34,7 +34,8 @@ fn assert_published_headlamp_matches_runtime(
 }
 
 fn expected_headlamp_after_on_ack_journey(now: Instant) -> HeadlampContext {
-    let ctx = HeadlampContext::default();
+    // Starting in Ready (assembly active, lamp dark) — the post-Phase-2 baseline.
+    let ctx = HeadlampContext { state: HeadlampState::Ready, ack_pending_since: None };
     let after_lux = ctx.on_receiving_message(HeadlampMessage::AmbientLux(20), now).ctx;
     after_lux.on_receiving_message(HeadlampMessage::AckOn, now).ctx
 }
@@ -46,6 +47,12 @@ async fn given_low_lux_and_on_ack_when_get_status_then_ledger_headlamp_matches_e
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
         actuation_command_tx: Some(actuation_tx),
+        // Phase 2: headlamp starts in Ready (assembly active, lamp dark).
+        // Phase 5 will drive this transition automatically via StartAssemblies + BecomeOn.
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -60,8 +67,14 @@ async fn given_low_lux_and_on_ack_when_get_status_then_ledger_headlamp_matches_e
         handle,
     };
 
+    // Phase 1: PowerOn → PreparingToStart; inject AssembliesReady to advance to Idle.
     controller.send_power_on().await.expect("power on");
     let _power_on_record = rx.recv().await.expect("ledger row for power on");
+    controller
+        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
+        .await
+        .expect("assemblies ready");
+    let _assemblies_ready_record = rx.recv().await.expect("ledger row for assemblies ready");
 
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(

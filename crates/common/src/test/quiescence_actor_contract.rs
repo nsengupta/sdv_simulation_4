@@ -10,7 +10,7 @@ use crate::test::power_on_to_idle;
 use crate::test::ActorGuard;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::twin_runtime::{commit_resolved_turn, ResolvedTurn, ZoneReplies};
-use crate::vehicle_state::VehicleContext;
+use crate::vehicle_state::{HeadlampContext, VehicleContext};
 use crate::vehicle_physics::{
     FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD,
 };
@@ -138,6 +138,11 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_then_two_ledger_rows_
     let (transition_tx, mut rx) = mpsc::channel(16);
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
+        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
+        initial_headlamp_ctx: Some(HeadlampContext {
+            state: HeadlampState::Ready,
+            ack_pending_since: None,
+        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -219,7 +224,7 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_then_two_ledger_rows_
     assert_eq!(snapshot.as_of_seq(), hop2.record_seq);
     assert_eq!(
         snapshot.context().headlamp.state,
-        HeadlampState::Off,
-        "zone hop should settle failed ON request to Off before danger synthesis"
+        HeadlampState::Ready,
+        "zone hop should settle failed ON request to Ready (assembly active) before danger synthesis"
     );
 }

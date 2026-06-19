@@ -25,6 +25,15 @@ pub enum FsmState {
     PreparingToStop,
 }
 
+/// Identity of a managed zone assembly.
+///
+/// Used by Phase-2+ messages to correlate zone replies with the originating assembly
+/// without coupling the brain to zone-specific types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZoneId {
+    Headlamp,
+}
+
 /// Brain-synthesized facts (detectors). Ledger-visible; not assembly / wire ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operational {

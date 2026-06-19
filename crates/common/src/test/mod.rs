@@ -17,6 +17,9 @@ mod fsm_preparation_contract;
 mod headlamp_ack_timer_contract;
 
 #[cfg(test)]
+mod headlamp_lifecycle_contract;
+
+#[cfg(test)]
 mod headlamp_reply_contract;
 
 #[cfg(test)]
@@ -159,6 +162,11 @@ async fn wait_ambient_lux(
 ///
 /// Bind the guard to a real name to keep the actor alive for the test:
 /// `let (controller, mut actuation_rx, _guard) = install_with_actuation("ID", 16).await;`
+///
+/// For tests that also need a specific initial headlamp state (Phase 2+), build the
+/// `VehicleControllerRuntimeOptions` directly and use
+/// `VehicleController::install_and_start_with_options`.
+#[allow(dead_code)]
 pub async fn install_with_actuation(
     identity: &str,
     capacity: usize,

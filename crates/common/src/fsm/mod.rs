@@ -11,7 +11,7 @@ pub mod transition_map;
 pub use crate::vehicle_state::HeadlampState;
 pub use machineries::{
     ActorModeHintFromDomain, DomainAction, FrontHeadlampIncompleteCause,
-    FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState, Operational,
+    FrontHeadlampSwitchDirection, FsmAction, FsmEvent, FsmState, Operational, ZoneId,
 };
 pub use step::{step, StepResult, RawTransitionRecord};
 pub use transition_map::{output, transition, TransitionNote, TransitionResult};

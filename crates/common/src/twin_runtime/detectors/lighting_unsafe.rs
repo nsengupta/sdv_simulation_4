@@ -12,7 +12,8 @@ use crate::vehicle_state::{HeadlampState, VehicleContext};
 /// Guards (ADR-7 step 7a confirmation #1):
 /// - operational mode is **Driving** (not Idle/Off/latched danger/warning),
 /// - `ambient_lux <= LUX_ON_THRESHOLD`,
-/// - headlamp settled **Off** (not `OnRequested` / `On` / `OffRequested`).
+/// - headlamp physical lamp is dark: state is `Off` (assembly not started) or `Ready`
+///   (assembly active but no lux-triggered ON command received yet).
 pub fn lighting_unsafe_detector(
     exit_state: &FsmState,
     exit_ctx: &VehicleContext,
@@ -23,7 +24,7 @@ pub fn lighting_unsafe_detector(
     if exit_ctx.visibility.ambient_lux > LUX_ON_THRESHOLD {
         return None;
     }
-    if exit_ctx.headlamp.state != HeadlampState::Off {
+    if !matches!(exit_ctx.headlamp.state, HeadlampState::Off | HeadlampState::Ready) {
         return None;
     }
     Some(FsmEvent::Internal(Operational::LightingUnsafe))
@@ -123,5 +124,21 @@ mod tests {
     fn lighting_unsafe_detector_inclusive_lux_on_threshold() {
         let ctx = ctx_at(LUX_ON_THRESHOLD, HeadlampState::Off);
         assert!(lighting_unsafe_detector(&FsmState::Driving, &ctx).is_some());
+    }
+
+    #[test]
+    fn lighting_unsafe_detector_fires_on_driving_dark_ready() {
+        // Ready = assembly active but physical lamp dark; unsafe while driving.
+        let ctx = ctx_at(20, HeadlampState::Ready);
+        assert!(matches!(
+            lighting_unsafe_detector(&FsmState::Driving, &ctx),
+            Some(FsmEvent::Internal(Operational::LightingUnsafe))
+        ));
+    }
+
+    #[test]
+    fn lighting_unsafe_detector_does_not_fire_when_ready_but_bright() {
+        let ctx = ctx_at(LUX_ON_THRESHOLD + 1, HeadlampState::Ready);
+        assert!(lighting_unsafe_detector(&FsmState::Driving, &ctx).is_none());
     }
 }
