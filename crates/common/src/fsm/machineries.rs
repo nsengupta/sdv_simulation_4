@@ -29,7 +29,7 @@ pub enum FsmState {
 ///
 /// Used by Phase-2+ messages to correlate zone replies with the originating assembly
 /// without coupling the brain to zone-specific types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ZoneId {
     Headlamp,
 }

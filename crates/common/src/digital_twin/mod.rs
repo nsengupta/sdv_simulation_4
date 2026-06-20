@@ -172,27 +172,44 @@ impl CarSnapshot {
 pub enum DigitalTwinCarVocabulary {
     /// Drive the FSM (`crate::fsm::step` derives context from event payloads and computes transitions).
     Fsm(FsmEvent),
-    /// Headlamp twinlet tell-back after [`crate::twin_runtime::headlamp_actor::HeadlampActor`] applied one message.
-    HeadlampZoneReady {
+    /// Zone twinlet tell-back after applying one message.
+    ZoneReady {
+        zone_id: crate::fsm::ZoneId,
         turn_id: u64,
         /// Matches the `tell_attempt` on the tell that produced this reply (retry correlation).
         tell_attempt: u32,
-        reply: crate::vehicle_state::HeadlampZoneReply,
+        reply: ZoneReply,
     },
     /// Zone-initiated hop (ACK timer, future assembly deadlines) — not correlated to a brain `turn_id`.
-    HeadlampZoneSpontaneous {
-        direction: crate::fsm::FrontHeadlampSwitchDirection,
-        cause: crate::fsm::FrontHeadlampIncompleteCause,
-        reply: crate::vehicle_state::HeadlampZoneReply,
+    ZoneSpontaneous {
+        zone_id: crate::fsm::ZoneId,
+        event: ZoneSpontaneousEvent,
     },
     /// Ractor deadline: zone twinlet did not tell-back in [`crate::twin_runtime::constants::ZONE_TELL_BACK_WAIT`].
-    TellBackTimeout {
+    ZoneTellBackTimeout {
+        zone_id: crate::fsm::ZoneId,
         turn_id: u64,
         tell_attempt: u32,
     },
     /// Return an as-of snapshot of the twin (stamped with `as_of_seq`); does **not** call
     /// [`crate::fsm::transition`].
     GetStatus(RpcReplyPort<CarSnapshot>),
+}
+
+/// Generic zone tell-back envelope — wraps zone-specific reply types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ZoneReply {
+    Headlamp(crate::vehicle_state::HeadlampZoneReply),
+}
+
+/// Zone-initiated event payload (ACK timeout, future assembly deadlines).
+#[derive(Debug, Clone)]
+pub enum ZoneSpontaneousEvent {
+    Headlamp {
+        direction: crate::fsm::FrontHeadlampSwitchDirection,
+        cause: crate::fsm::FrontHeadlampIncompleteCause,
+        reply: crate::vehicle_state::HeadlampZoneReply,
+    },
 }
 
 impl From<FsmEvent> for DigitalTwinCarVocabulary {
@@ -212,9 +229,9 @@ impl TryFrom<DigitalTwinCarVocabulary> for FsmEvent {
         match value {
             DigitalTwinCarVocabulary::Fsm(e) => Ok(e),
             DigitalTwinCarVocabulary::GetStatus(_)
-            | DigitalTwinCarVocabulary::HeadlampZoneReady { .. }
-            | DigitalTwinCarVocabulary::HeadlampZoneSpontaneous { .. }
-            | DigitalTwinCarVocabulary::TellBackTimeout { .. } => Err(NotFsmVocabulary),
+            | DigitalTwinCarVocabulary::ZoneReady { .. }
+            | DigitalTwinCarVocabulary::ZoneSpontaneous { .. }
+            | DigitalTwinCarVocabulary::ZoneTellBackTimeout { .. } => Err(NotFsmVocabulary),
         }
     }
 }
@@ -225,9 +242,9 @@ impl DigitalTwinCarVocabulary {
         match self {
             Self::Fsm(e) => Some(e),
             Self::GetStatus(_)
-            | Self::HeadlampZoneReady { .. }
-            | Self::HeadlampZoneSpontaneous { .. }
-            | Self::TellBackTimeout { .. } => None,
+            | Self::ZoneReady { .. }
+            | Self::ZoneSpontaneous { .. }
+            | Self::ZoneTellBackTimeout { .. } => None,
         }
     }
 
@@ -236,9 +253,9 @@ impl DigitalTwinCarVocabulary {
         match self {
             Self::Fsm(e) => Some(e),
             Self::GetStatus(_)
-            | Self::HeadlampZoneReady { .. }
-            | Self::HeadlampZoneSpontaneous { .. }
-            | Self::TellBackTimeout { .. } => None,
+            | Self::ZoneReady { .. }
+            | Self::ZoneSpontaneous { .. }
+            | Self::ZoneTellBackTimeout { .. } => None,
         }
     }
 }

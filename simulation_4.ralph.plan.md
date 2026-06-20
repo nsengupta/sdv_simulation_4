@@ -29,10 +29,16 @@
   - Ignition/Switch Off events are emulated by the emulator:
     - Switch On -> CAN ID 0x100 -> Payload 01 00 00 00 00 00 00 00
     - Switch Off -> CAN ID 0x100 -> Payload 00 00 00 00 00 00 00 00
-  - SwitchOn event will lead the Digital Twin to Idle state from PoweredOff
+  - SwitchOn event will lead the Digital Twin to Idle state from PoweredOff 
+    (refer to: findings/startup-shutdown-sequence-analysis.md)
   - The Headlamp actuator is a synchronous call to a tokio Channel today; we should make it a 
     separate child actor so that actuation doesn't hold the main thread of virtual car actor 
-    (refer to findings/single-thread-guarantee.md|Category 2 — actuation_manager.execute).
+    (refer to findings/single-thread-guarantee.md|Category 2 — actuation_manager.execute). This 
+    child actor is the replacement of ActuationManager. It is responsible for sending out all 
+    actuation instructions on the CAN Bus. As such, it must:
+    - Be capable of translating Virtual Car's vocabulary to CAN Bus event
+    - Abstract away the tokio channel to which is posts the actuation message (gateway is 
+      already at the receiving end of this channel)
   - Introduce one more child actor assembly, similar to Headlamp (but this is Nice-To-Have in 
     this iteration). However, the work done in this iteration must lead to readiness for more 
     such child actor assemblies.

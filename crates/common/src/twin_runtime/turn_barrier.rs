@@ -1,0 +1,300 @@
+//! Reorder-buffer (ROB) barrier for one in-flight FSM turn (Phase 4).
+//!
+//! Every [`FsmEvent`] processed by the brain actor immediately gets a `TurnBarrier` pushed
+//! onto the back of `VirtualCarRuntimeState::barrier_queue`.  Barriers are committed
+//! strictly in **arrival order** from the front of the queue: the drain loop advances only
+//! while the front barrier's `pending` set is empty (`is_complete`).
+//!
+//! ## Lifecycle
+//!
+//! ```text
+//! begin_fsm_turn   ─── new() ───► [pending = {Headlamp}]
+//!                                        │
+//!         ZoneReady  ───────────► act_on_zone_reply()
+//!                                        │  aborts live timer
+//!         ZoneTellBackTimeout ──► act_on_zone_timeout()
+//!                                        │  removes spent timer
+//!                                        ├── Retry → store_retry_timer()
+//!                                        └── GaveUp → caller: act_on_zone_reply(synthetic)
+//!                                        │
+//!         [optional IgnitionOffReset phase: start_ignition_off_reset()]
+//!                                        │
+//!         is_complete() == true ─────────► drain loop → into_resolved_turn()
+//! ```
+//!
+//! ## Phase-6 note
+//! `start_ignition_off_reset` and `BarrierPhase::IgnitionOffReset` will be deleted when
+//! `fsm_step_lands_off` / `ResetForIgnitionOff` are removed (Phase 6).
+
+use std::collections::{BTreeSet, HashMap};
+use std::time::Instant;
+
+use ractor::concurrency::JoinHandle;
+use ractor::MessagingErr;
+
+use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
+use crate::fsm::{FsmEvent, ZoneId};
+use crate::twin_runtime::twin_turn::ResolvedTurn;
+use crate::twin_runtime::zone_replies::ZoneReplies;
+use crate::twin_runtime::zone_tell_back::TellBackWait;
+use crate::vehicle_state::{HeadlampMessage, HeadlampZoneReply};
+
+/// Handle to the ractor timer task that sends `ZoneTellBackTimeout` to the brain.
+pub(crate) type TellBackTimer = JoinHandle<Result<(), MessagingErr<DigitalTwinCarVocabulary>>>;
+
+// ── BarrierPhase ─────────────────────────────────────────────────────────────
+
+/// Internal two-phase state for turns that need an ignition-off headlamp reset.
+///
+/// Deleted in Phase 6 along with `fsm_step_lands_off`.
+pub(crate) enum BarrierPhase {
+    /// Normal: waiting for (or already received) the primary zone reply.
+    Primary,
+    /// Primary complete; waiting for the ignition-off reset reply.
+    /// Carries `primary_reply` so `into_resolved_turn` can build the correct [`ZoneReplies`].
+    IgnitionOffReset {
+        primary_reply: Option<HeadlampZoneReply>,
+    },
+}
+
+// ── TimeoutOutcome ────────────────────────────────────────────────────────────
+
+/// Decision returned by [`TurnBarrier::act_on_zone_timeout`].
+pub(crate) enum TimeoutOutcome {
+    /// Retry budget remains; caller must re-tell the zone and call
+    /// [`TurnBarrier::store_retry_timer`] with the fresh handle.
+    Retry { next_attempt: u32 },
+    /// All retries exhausted; caller must generate a synthetic reply and call
+    /// [`TurnBarrier::act_on_zone_reply`] to close the zone's pending slot.
+    GaveUp,
+}
+
+// ── TurnBarrier ──────────────────────────────────────────────────────────────
+
+/// One FSM turn awaiting zone tell-back(s) before the drain loop may commit it.
+///
+/// All fields are private.  Identity (`turn_id`) is assigned at construction via
+/// `VirtualCarRuntimeState::alloc_turn_id` and is immutable thereafter.  Read-only
+/// getters expose the four "header" fields to the actor; all mutation goes through
+/// the dedicated methods below.
+pub(crate) struct TurnBarrier {
+    /// Monotonically increasing identity assigned by `VirtualCarRuntimeState::alloc_turn_id`;
+    /// used by zone twinlets to correlate `ZoneReady` / `ZoneTellBackTimeout` messages back
+    /// to the correct brain turn.  Immutable after construction.
+    turn_id: u64,
+    /// The ingress event that opened this turn; forwarded unchanged to `ResolvedTurn`.
+    /// Immutable after construction.
+    event: FsmEvent,
+    /// Wall-clock stamp captured when the event arrived; forwarded to `ResolvedTurn`
+    /// so that zone tells during retries carry the *original* arrival time.
+    /// Immutable after construction.
+    now: Instant,
+    /// Tracks whether a second (ignition-off reset) zone tell is in progress.
+    /// `Primary` covers the common path; `IgnitionOffReset` is an interim shim
+    /// deleted in Phase 6.  Mutated only via `start_ignition_off_reset`.
+    phase: BarrierPhase,
+
+    /// Zones for which a reply has been requested but not yet received.
+    /// `BTreeSet` gives deterministic iteration order across zones (important for
+    /// future multi-zone turns where Phase 7 adds more assemblies).
+    pending: BTreeSet<ZoneId>,
+    /// Correlation state per zone: `tell_attempt` advances on each retry so that
+    /// late-arriving replies from a superseded attempt are discarded as stale.
+    zone_waits: HashMap<ZoneId, TellBackWait>,
+    /// Live timer handles; `abort()` is called when a real reply arrives first,
+    /// preventing a spurious `ZoneTellBackTimeout` from firing afterwards.
+    zone_timers: HashMap<ZoneId, TellBackTimer>,
+    /// Zone replies collected so far; handed to `into_resolved_turn` for commit.
+    zone_replies: HashMap<ZoneId, ZoneReply>,
+    /// Original zone message per zone, kept so the correct payload is re-sent on
+    /// each retry without the actor having to reconstruct it from the event.
+    zone_messages: HashMap<ZoneId, HeadlampMessage>,
+}
+
+impl TurnBarrier {
+    /// Create a barrier for a turn that needs at least one zone tell-back.
+    pub fn new(turn_id: u64, event: FsmEvent, now: Instant) -> Self {
+        Self {
+            turn_id,
+            event,
+            now,
+            phase: BarrierPhase::Primary,
+            pending: BTreeSet::new(),
+            zone_waits: HashMap::new(),
+            zone_timers: HashMap::new(),
+            zone_replies: HashMap::new(),
+            zone_messages: HashMap::new(),
+        }
+    }
+
+    /// Create a barrier for a turn that needs **no** zone tell-back.
+    ///
+    /// The `pending` set starts empty, so `is_complete()` returns `true` immediately
+    /// and the drain loop commits the turn without waiting for any zone reply.
+    /// Use this for pure brain-state transitions (e.g. `UpdateAmbientLux`) where
+    /// no zone message is emitted.
+    pub fn new_passthrough(turn_id: u64, event: FsmEvent, now: Instant) -> Self {
+        Self::new(turn_id, event, now)
+    }
+
+    // ── read-only header accessors ────────────────────────────────────────────
+
+    /// The monotonic turn identity; used by the actor to correlate incoming zone messages.
+    pub fn turn_id(&self) -> u64 {
+        self.turn_id
+    }
+
+    /// The ingress FSM event; inspected by `on_zone_ready` to probe `fsm_step_lands_off`.
+    pub fn event(&self) -> &FsmEvent {
+        &self.event
+    }
+
+    /// The original event arrival timestamp; re-used on retries and forwarded to `ResolvedTurn`.
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
+    /// The current barrier phase; inspected by `on_zone_ready` to decide `IgnitionOffReset`.
+    pub fn phase(&self) -> &BarrierPhase {
+        &self.phase
+    }
+
+    // ── query ────────────────────────────────────────────────────────────────
+
+    /// `true` when all registered zones have replied; drain loop may commit this barrier.
+    pub fn is_complete(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Whether the stored `tell_attempt` for `zone_id` matches the incoming attempt number.
+    /// Used in `on_zone_ready` and `on_zone_timeout` to discard stale / mismatched messages.
+    pub fn tell_attempt_matches(&self, zone_id: ZoneId, tell_attempt: u32) -> bool {
+        self.zone_waits
+            .get(&zone_id)
+            .map_or(false, |w| w.tell_attempt == tell_attempt)
+    }
+
+    /// The original zone message stored for `zone_id`; needed to re-tell on timeout retry.
+    pub fn zone_message(&self, zone_id: ZoneId) -> Option<HeadlampMessage> {
+        self.zone_messages.get(&zone_id).copied()
+    }
+
+    // ── mutation ─────────────────────────────────────────────────────────────
+
+    /// Register one zone as pending.  Called once per zone in `begin_fsm_turn`.
+    /// Stores the message for retry, the correlation wait, and the live timer handle.
+    pub fn add_pending_zone(
+        &mut self,
+        zone_id: ZoneId,
+        message: HeadlampMessage,
+        wait: TellBackWait,
+        timer: TellBackTimer,
+    ) {
+        self.pending.insert(zone_id);
+        self.zone_messages.insert(zone_id, message);
+        self.zone_waits.insert(zone_id, wait);
+        self.zone_timers.insert(zone_id, timer);
+    }
+
+    /// Store a fresh timer handle after a retry.  Does NOT abort the old one (already spent).
+    pub fn store_retry_timer(&mut self, zone_id: ZoneId, timer: TellBackTimer) {
+        self.zone_timers.insert(zone_id, timer);
+    }
+
+    /// Apply a received zone reply: remove from `pending`, store the reply, abort the live timer.
+    pub fn act_on_zone_reply(&mut self, zone_id: ZoneId, reply: ZoneReply) {
+        self.pending.remove(&zone_id);
+        self.zone_replies.insert(zone_id, reply);
+        // Timer is still live → must abort to prevent a spurious ZoneTellBackTimeout.
+        if let Some(timer) = self.zone_timers.remove(&zone_id) {
+            timer.abort();
+        }
+    }
+
+    /// Handle a fired timer: remove the **spent** handle (no abort — it already fired),
+    /// then decide retry vs. give-up.
+    ///
+    /// The `tell_attempt` guard prevents a timeout that was superseded by a real reply
+    /// (and thus had its timer aborted in `act_on_zone_reply`) from being double-processed
+    /// if a stale message still reaches the actor's mailbox between abort and draining.
+    ///
+    /// On `Retry`: caller must re-tell and call `store_retry_timer`.
+    /// On `GaveUp`: caller must synthesise a reply and call `act_on_zone_reply`.
+    pub fn act_on_zone_timeout(&mut self, zone_id: ZoneId, tell_attempt: u32) -> TimeoutOutcome {
+        // Timer has already fired — drop the stale handle, no abort() needed.
+        let _ = self.zone_timers.remove(&zone_id);
+
+        let Some(wait) = self.zone_waits.get_mut(&zone_id) else {
+            // No wait state means this zone was already resolved; treat as give-up.
+            return TimeoutOutcome::GaveUp;
+        };
+
+        if wait.tell_attempt == tell_attempt && wait.retries_remaining > 0 {
+            // Advance attempt counter so later replies from the old attempt are stale.
+            wait.tell_attempt = wait.tell_attempt.saturating_add(1);
+            wait.retries_remaining -= 1;
+            TimeoutOutcome::Retry {
+                next_attempt: wait.tell_attempt,
+            }
+        } else {
+            // Attempt mismatch (stale) or no retries left.
+            TimeoutOutcome::GaveUp
+        }
+    }
+
+    /// Transition to `IgnitionOffReset` phase (Phase 6 deletes this).
+    ///
+    /// The primary headlamp reply is extracted from `zone_replies` and stashed in
+    /// the `IgnitionOffReset` phase enum so that `into_resolved_turn` can later
+    /// present both the primary and reset replies to the commit layer in the correct
+    /// order.  The barrier is then re-opened (`pending` gets `Headlamp` again) to
+    /// wait for the headlamp's acknowledgement of the `ResetForIgnitionOff` message.
+    pub fn start_ignition_off_reset(&mut self, wait: TellBackWait, timer: TellBackTimer) {
+        let primary_reply = self.zone_replies.remove(&ZoneId::Headlamp).map(|r| match r {
+            ZoneReply::Headlamp(hl) => hl,
+        });
+        self.phase = BarrierPhase::IgnitionOffReset { primary_reply };
+        let msg = HeadlampMessage::ResetForIgnitionOff;
+        // Re-register Headlamp as pending for the second (reset) tell-back.
+        self.pending.insert(ZoneId::Headlamp);
+        self.zone_messages.insert(ZoneId::Headlamp, msg);
+        self.zone_waits.insert(ZoneId::Headlamp, wait);
+        self.zone_timers.insert(ZoneId::Headlamp, timer);
+    }
+
+    /// Abort all live timers.  Called in `post_stop` during actor teardown.
+    pub fn abort_all_timers(&mut self) {
+        for (_, timer) in self.zone_timers.drain() {
+            timer.abort();
+        }
+    }
+
+    // ── drain ────────────────────────────────────────────────────────────────
+
+    /// Consuming decomposition for the drain loop: packages `event`, `now`, and the
+    /// collected zone replies into a [`ResolvedTurn`] ready for `commit_resolved_turn`.
+    ///
+    /// Called only after `is_complete()` returns `true` so that all zone replies
+    /// are guaranteed to be present (either real or synthetic).
+    pub fn into_resolved_turn(self) -> ResolvedTurn {
+        let headlamp_reply = self.zone_replies.into_values().find_map(|r| match r {
+            ZoneReply::Headlamp(hl) => Some(hl),
+        });
+
+        let zone_replies = match self.phase {
+            // Common path: at most one headlamp reply from the primary tell.
+            BarrierPhase::Primary => ZoneReplies::with_headlamp(headlamp_reply, None),
+            // Two-phase path: `primary_reply` is the normal headlamp acknowledge;
+            // `headlamp_reply` here is the response to `ResetForIgnitionOff`.
+            BarrierPhase::IgnitionOffReset { primary_reply } => {
+                ZoneReplies::with_headlamp(primary_reply, headlamp_reply)
+            }
+        };
+
+        ResolvedTurn {
+            ingress: self.event,
+            now: self.now,
+            zone_replies,
+        }
+    }
+}

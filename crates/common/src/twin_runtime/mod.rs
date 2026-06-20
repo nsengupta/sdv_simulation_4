@@ -4,6 +4,7 @@ pub mod controller;
 pub mod detectors;
 pub mod headlamp_actor;
 pub mod outcome_map;
+pub(crate) mod turn_barrier;
 pub mod twin_turn;
 pub mod zone_replies;
 pub mod zone_tell_back;

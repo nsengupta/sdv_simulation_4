@@ -5,15 +5,26 @@
 //! - **[`DigitalTwinCarVocabulary`](crate::digital_twin::DigitalTwinCarVocabulary)** — full mailbox:
 //!   wraps [`FsmEvent`](crate::fsm::FsmEvent) via [`DigitalTwinCarVocabulary::Fsm`] plus
 //!   request/reply such as [`DigitalTwinCarVocabulary::GetStatus`] ([`RpcReplyPort`]).
+//!
+//! ## Phase 4 — reorder buffer
+//!
+//! Every `Fsm` message immediately creates a [`TurnBarrier`] at the **back** of
+//! `barrier_queue`.  The drain loop (`try_drain_barrier_queue`) commits completed barriers
+//! strictly from the **front**, preserving event-arrival order regardless of the order in
+//! which zone replies arrive.
 
 use async_trait::async_trait;
-use ractor::concurrency::{Duration as RactorDuration, JoinHandle};
+use ractor::concurrency::Duration as RactorDuration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, MessagingErr, RpcReplyPort};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::diagnostic::{DiagnosticMessage, DiagnosticSink, TokioMpscDiagnosticSink, diag_front_headlamp_confirmed, diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_warning, diag_transition_sink_full, diag_transition_sink_closed};
+use crate::diagnostic::{
+    DiagnosticMessage, DiagnosticSink, TokioMpscDiagnosticSink, diag_front_headlamp_confirmed,
+    diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_warning,
+    diag_transition_sink_full, diag_transition_sink_closed,
+};
 use crate::digital_twin::{CarSnapshot, DigitalTwinCar, DigitalTwinCarVocabulary};
 use crate::twin_runtime::constants::ZONE_TELL_BACK_WAIT;
 use crate::twin_runtime::controller::actuation_manager::{
@@ -21,20 +32,17 @@ use crate::twin_runtime::controller::actuation_manager::{
 };
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{
-    self, ActorModeHintFromDomain, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState,
-    HeadlampState,
+    self, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState, HeadlampState,
 };
 use crate::twin_runtime::headlamp_actor::{tell_headlamp_zone, HeadlampActor, HeadlampActorMsg, HeadlampActorState};
 use crate::twin_runtime::twin_turn::{commit_resolved_turn as resolve_quiescence, fsm_step_lands_off, ResolvedTurn};
 use crate::twin_runtime::ZoneReplies;
-use crate::twin_runtime::zone_tell_back::{on_tell_back_timeout, TellBackTimeoutOutcome, TellBackWait};
-use crate::twin_runtime::QuiescentResult;
+use crate::twin_runtime::zone_tell_back::{synthetic_unresponsive_headlamp_reply, TellBackWait};
 use crate::twin_runtime::zone_turn::fsm_event_headlamp_message;
+use crate::twin_runtime::turn_barrier::{BarrierPhase, TellBackTimer, TimeoutOutcome, TurnBarrier};
 use crate::vehicle_state::{HeadlampMessage, HeadlampZoneReply, VehicleContext};
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
 use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
-
-type TellBackTimer = JoinHandle<Result<(), MessagingErr<DigitalTwinCarVocabulary>>>;
 
 /// The Digital Twin Actor
 pub struct VirtualCarActor;
@@ -60,38 +68,14 @@ impl From<&str> for VirtualCarActorArgs {
     }
 }
 
-/// One FSM event awaiting headlamp tell-back(s) before commit.
-///
-/// `PrimaryHeadlamp` waits for the zone twinlet to ACK/NACK the actuation command.
-/// If the FSM lands on `Off`, a second `IgnitionOffReset` wait is started to tell the
-/// headlamp zone to reset its internal state for the next ignition cycle.
-#[derive(Debug)]
-enum PendingBrainTurn {
-    /// Event's primary zone message was told; waiting for embed.
-    PrimaryHeadlamp {
-        wait: TellBackWait,
-        timer: Option<TellBackTimer>,
-        event: FsmEvent,
-        now: Instant,
-        message: HeadlampMessage,
-    },
-    /// Primary embed received (or skipped); waiting for ignition-off reset tell-back.
-    IgnitionOffReset {
-        wait: TellBackWait,
-        timer: Option<TellBackTimer>,
-        event: FsmEvent,
-        now: Instant,
-        headlamp_reply: Option<HeadlampZoneReply>,
-    },
-}
-
 /// Mutable state of the virtual car actor, held across `handle` calls.
 pub struct VirtualCarRuntimeState {
     twin_car: DigitalTwinCar,
     headlamp_actor: ActorRef<HeadlampActorMsg>,
     next_turn_id: u64,
-    pending_turn: Option<PendingBrainTurn>,
-    fsm_backlog: VecDeque<(FsmEvent, Instant)>,
+    /// Reorder-buffer: every in-flight FSM turn occupies one slot.
+    /// The drain loop commits from the front in strict arrival order.
+    barrier_queue: VecDeque<TurnBarrier>,
     next_record_seq: u64,
     /// Monotonic↔wall anchor for this run; the sole source of wall-clock stamps on published
     /// records and of the actuation `session_id`.
@@ -102,10 +86,16 @@ pub struct VirtualCarRuntimeState {
     transition_sink: Option<Arc<dyn TransitionRecordSink>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActorMode {
-    Normal,
-    Transitioning,
+impl VirtualCarRuntimeState {
+    /// Consume and return the next monotonic turn ID, advancing the counter atomically.
+    ///
+    /// This is the **only** place `next_turn_id` is read; coupling the advance with the
+    /// read prevents the counter from drifting out of sync with `TurnBarrier` creation.
+    fn alloc_turn_id(&mut self) -> u64 {
+        let id = self.next_turn_id;
+        self.next_turn_id = self.next_turn_id.saturating_add(1);
+        id
+    }
 }
 
 impl Default for VirtualCarActor {
@@ -134,21 +124,18 @@ impl Actor for VirtualCarActor {
     ) -> Result<Self::State, ActorProcessingErr> {
         let identity = args.identity.clone();
 
-        // Wrap optional diagnostic TX channel into a DiagnosticSink.
         let diagnostic_sink: Option<Arc<dyn DiagnosticSink>> = args
             .runtime_options
             .diagnostic_tx
             .clone()
             .map(|tx| Arc::new(TokioMpscDiagnosticSink::new(tx)) as Arc<dyn DiagnosticSink>);
 
-        // Wrap optional transition TX channel into a TransitionRecordSink.
         let transition_sink: Option<Arc<dyn TransitionRecordSink>> = args
             .runtime_options
             .transition_tx
             .clone()
             .map(|tx| Arc::new(TokioMpscTransitionRecordSink::new(tx)) as Arc<dyn TransitionRecordSink>);
 
-        // Emit init message if sink is available.
         if let Some(sink) = &diagnostic_sink {
             let _ = sink.try_emit(DiagnosticMessage::info(
                 "VirtualCarActor",
@@ -156,8 +143,6 @@ impl Actor for VirtualCarActor {
             ));
         }
 
-        // One wall-clock read per run: this anchor stamps published records *and* seeds the
-        // actuation session id, so both share a single, consistent epoch.
         let session_epoch = SessionEpoch::capture();
 
         let actuation_manager: Arc<dyn ActuationManager> =
@@ -170,8 +155,7 @@ impl Actor for VirtualCarActor {
                 );
                 Arc::new(manager)
             } else {
-                let manager = DefaultActuationManager::default();
-                Arc::new(manager)
+                Arc::new(DefaultActuationManager::default())
             };
 
         let mut initial_ctx = VehicleContext::default();
@@ -188,8 +172,7 @@ impl Actor for VirtualCarActor {
             twin_car: DigitalTwinCar::new(identity, FsmState::Off, initial_ctx)?,
             headlamp_actor,
             next_turn_id: 1,
-            pending_turn: None,
-            fsm_backlog: VecDeque::new(),
+            barrier_queue: VecDeque::new(),
             next_record_seq: 1,
             session_epoch,
             runtime_options: args.runtime_options,
@@ -199,205 +182,143 @@ impl Actor for VirtualCarActor {
         })
     }
 
-    /// Main message dispatch: each variant delegates to a dedicated handler, then
-    /// drains the FSM backlog. The `pending_turn` guard serialises turns — new FSM events
-    /// arriving while a tell-back is in-flight are buffered in `fsm_backlog` instead of
-    /// starting a new turn.
+    /// Main message dispatch.  Every `Fsm` event immediately gets its own [`TurnBarrier`]
+    /// pushed to the back of `barrier_queue`; the drain loop commits from the front.
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         runtime_state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        use DigitalTwinCarVocabulary::{Fsm, GetStatus, HeadlampZoneReady, HeadlampZoneSpontaneous, TellBackTimeout};
+        use DigitalTwinCarVocabulary::{Fsm, GetStatus, ZoneReady, ZoneSpontaneous, ZoneTellBackTimeout};
 
         match message {
             Fsm(evt_arrived) => {
                 if matches!(evt_arrived, FsmEvent::TimerTick) && runtime_state.runtime_options.log_timer_tick {
-                    // TODO: rate-limit once structured logging is introduced.
                     if let Some(sink) = &runtime_state.diagnostic_sink {
                         let _ = sink.try_emit(diag_timer_tick(runtime_state.twin_car.identity()));
                     }
                 }
                 let now = Instant::now();
-                // If a turn is already awaiting tell-back, buffer this event instead of
-                // starting a parallel turn — serialises FSM processing.
-                if runtime_state.pending_turn.is_some() {
-                    // Buffer the event with its arrival timestamp for later draining.
-                    runtime_state.fsm_backlog.push_back((evt_arrived, now));
-                    return Ok(());
-                }
-                // No pending turn: start a new FSM turn (assigns turn_id, may begin a
-                // headlamp wait or commit directly).
+                // Every event gets its own barrier immediately (no pending_turn guard).
                 Self::begin_fsm_turn(&myself, runtime_state, evt_arrived, now).await?;
-                // After the new turn consumed (or skipped headlamp wait), drain any
-                // backlogged events while no turn is pending.
-                Self::pump_fsm_backlog(&myself, runtime_state).await
+                Self::try_drain_barrier_queue(runtime_state).await
             }
-            HeadlampZoneReady {
+            ZoneReady {
+                zone_id,
                 turn_id,
                 tell_attempt,
                 reply,
             } => {
-                Self::on_headlamp_zone_ready(
+                Self::on_zone_ready(
                     &myself,
                     runtime_state,
+                    zone_id,
                     turn_id,
                     tell_attempt,
                     reply,
                 )
                 .await?;
-                Self::pump_fsm_backlog(&myself, runtime_state).await
+                Self::try_drain_barrier_queue(runtime_state).await
             }
-            TellBackTimeout {
+            ZoneTellBackTimeout {
+                zone_id,
                 turn_id,
                 tell_attempt,
             } => {
-                Self::on_tell_back_timeout(&myself, runtime_state, turn_id, tell_attempt).await?;
-                Self::pump_fsm_backlog(&myself, runtime_state).await
+                Self::on_zone_timeout(&myself, runtime_state, zone_id, turn_id, tell_attempt)
+                    .await?;
+                Self::try_drain_barrier_queue(runtime_state).await
             }
-            HeadlampZoneSpontaneous {
-                direction,
-                cause,
-                reply,
-            } => {
-                Self::on_headlamp_zone_spontaneous(runtime_state, direction, cause, reply).await?;
-                Self::pump_fsm_backlog(&myself, runtime_state).await
+            ZoneSpontaneous { zone_id, event } => {
+                Self::on_zone_spontaneous(runtime_state, zone_id, event).await?;
+                Self::try_drain_barrier_queue(runtime_state).await
             }
             GetStatus(reply) => Self::reply_get_status(
                 reply,
                 &runtime_state.twin_car,
-                // as-of: the last event sequence applied so far (0 before any event).
                 runtime_state.next_record_seq.saturating_sub(1),
             ),
         }
     }
 
-    /// Clean up before actor exit: abort any pending tell-back timer and stop the
-    /// headlamp twinlet. Target design: supervisor-ordered teardown of assembly actors
-    /// (see milestone doc).
+    /// Abort all in-flight timers and stop the headlamp twinlet.
     async fn post_stop(
         &self,
         _myself: ActorRef<Self::Msg>,
         runtime_state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        if let Some(pending) = runtime_state.pending_turn.take() {
-            Self::abort_pending_timer(pending);
+        for barrier in &mut runtime_state.barrier_queue {
+            barrier.abort_all_timers();
         }
-        // Interim: brain stops the headlamp twinlet here. Target: assembly actors stop before
-        // the brain (supervisor-ordered teardown), not brain-owned child stop — see milestone doc.
+        runtime_state.barrier_queue.clear();
+        // Interim: brain stops the headlamp twinlet here. Target: supervisor-ordered teardown.
         runtime_state.headlamp_actor.stop(None);
         Ok(())
     }
 }
 
 impl VirtualCarActor {
-    /// Abort any active tell-back timer for a pending turn.
-    /// Called during shutdown and when re-arming a new timer.
-    fn abort_pending_timer(pending: PendingBrainTurn) {
-        match pending {
-            PendingBrainTurn::PrimaryHeadlamp { mut timer, .. }
-            | PendingBrainTurn::IgnitionOffReset { mut timer, .. } => {
-                Self::abort_tell_back_timer(&mut timer);
-            }
-        }
-    }
+    // ── timer helper ─────────────────────────────────────────────────────────
 
-    /// Cancel a tell-back timer if it is still running.
-    /// Safe to call when `timer` is `None`.
-    fn abort_tell_back_timer(timer: &mut Option<TellBackTimer>) {
-        if let Some(handle) = timer.take() {
-            handle.abort();
-        }
-    }
-
-    /// Schedule (or re-schedule) a `TellBackTimeout` message after `ZONE_TELL_BACK_WAIT`.
-    /// Cancels any previously running timer for this slot first.
+    /// Schedule a `ZoneTellBackTimeout` message after `ZONE_TELL_BACK_WAIT`.
     fn arm_tell_back_timer(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
-        wait: TellBackWait,
-        timer: &mut Option<TellBackTimer>,
-    ) {
-        Self::abort_tell_back_timer(timer);
-        let turn_id = wait.turn_id;
-        let tell_attempt = wait.tell_attempt;
-        *timer = Some(brain.send_after(
+        turn_id: u64,
+        tell_attempt: u32,
+    ) -> TellBackTimer {
+        brain.send_after(
             RactorDuration::from(ZONE_TELL_BACK_WAIT),
-            move || DigitalTwinCarVocabulary::TellBackTimeout {
+            move || DigitalTwinCarVocabulary::ZoneTellBackTimeout {
+                zone_id: crate::fsm::ZoneId::Headlamp,
                 turn_id,
                 tell_attempt,
             },
-        ));
+        )
     }
 
-    /// Send a headlamp zone message, arm the tell-back timer, and stash the pending turn.
+    // ── FSM turn entry ────────────────────────────────────────────────────────
+
+    /// Assign a turn ID, create a [`TurnBarrier`], tell any required zone(s), and push
+    /// the barrier onto the back of `barrier_queue`.
     ///
-    /// Two variants exist: `PrimaryHeadlamp` for the event's own message, and
-    /// `IgnitionOffReset` (sent after the primary completes **and** the FSM lands on `Off`).
-    async fn begin_headlamp_wait(
-        brain: &ActorRef<DigitalTwinCarVocabulary>,
-        runtime_state: &mut VirtualCarRuntimeState,
-        turn_id: u64,
-        message: HeadlampMessage,
-        event: FsmEvent,
-        now: Instant,
-        headlamp_reply: Option<HeadlampZoneReply>,
-    ) -> Result<(), ActorProcessingErr> {
-        let wait = TellBackWait::new(turn_id);
-        tell_headlamp_zone(
-            &runtime_state.headlamp_actor,
-            brain,
-            turn_id,
-            wait.tell_attempt,
-            message,
-            now,
-        )?;
-        let mut timer = None;
-        Self::arm_tell_back_timer(brain, wait, &mut timer);
-        runtime_state.pending_turn = Some(if message == HeadlampMessage::ResetForIgnitionOff {
-            PendingBrainTurn::IgnitionOffReset {
-                wait,
-                timer,
-                event,
-                now,
-                headlamp_reply,
-            }
-        } else {
-            PendingBrainTurn::PrimaryHeadlamp {
-                wait,
-                timer,
-                event,
-                now,
-                message,
-            }
-        });
-        Ok(())
-    }
-
-    /// Start processing one FSM event: assign a turn ID, then either begin a headlamp wait
-    /// (if the event carries a headlamp message, or the step lands on `Off`) or commit directly.
+    /// Three mutually exclusive paths, tried in priority order:
+    ///
+    /// 1. **Zone-directed** — the event maps to a headlamp message (e.g. `PowerOn` → `BecomeOn`).
+    ///    A `TurnBarrier` with `Headlamp` pending is created; the zone gets a tell and a timer.
+    ///
+    /// 2. **Ignition-off reset** — no headlamp message, but the FSM will land on `Off` given
+    ///    the current context.  A `ResetForIgnitionOff` is sent directly and the barrier enters
+    ///    `IgnitionOffReset` phase.  Removed in Phase 6.
+    ///
+    /// 3. **Passthrough** — no zone interaction at all; the barrier is instantly drainable.
     async fn begin_fsm_turn(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
         event: FsmEvent,
         now: Instant,
     ) -> Result<(), ActorProcessingErr> {
-        let turn_id = runtime_state.next_turn_id;
-        runtime_state.next_turn_id = runtime_state.next_turn_id.saturating_add(1);
+        let turn_id = runtime_state.alloc_turn_id();
 
+        // Primary headlamp zone tell (zone-directed event).
         if let Some(message) = fsm_event_headlamp_message(&event) {
-            return Self::begin_headlamp_wait(
+            let wait = TellBackWait::new(turn_id);
+            tell_headlamp_zone(
+                &runtime_state.headlamp_actor,
                 brain,
-                runtime_state,
                 turn_id,
+                0,
                 message,
-                event,
                 now,
-                None,
-            )
-            .await;
+            )?;
+            let timer = Self::arm_tell_back_timer(brain, turn_id, 0);
+            let mut barrier = TurnBarrier::new(turn_id, event, now);
+            barrier.add_pending_zone(crate::fsm::ZoneId::Headlamp, message, wait, timer);
+            runtime_state.barrier_queue.push_back(barrier);
+            return Ok(());
         }
 
+        // Pure ignition-off reset: event has no headlamp message, but FSM will land on Off.
         if fsm_step_lands_off(
             runtime_state.twin_car.current_state(),
             runtime_state.twin_car.context(),
@@ -405,205 +326,200 @@ impl VirtualCarActor {
             now,
             &ZoneReplies::simulate_locally(),
         ) {
-            return Self::begin_headlamp_wait(
-                brain,
-                runtime_state,
-                turn_id,
-                HeadlampMessage::ResetForIgnitionOff,
-                event,
-                now,
-                None,
-            )
-            .await;
+            let msg = HeadlampMessage::ResetForIgnitionOff;
+            let wait = TellBackWait::new(turn_id);
+            tell_headlamp_zone(&runtime_state.headlamp_actor, brain, turn_id, 0, msg, now)?;
+            let timer = Self::arm_tell_back_timer(brain, turn_id, 0);
+            let mut barrier = TurnBarrier::new(turn_id, event, now);
+            barrier.start_ignition_off_reset(wait, timer);
+            runtime_state.barrier_queue.push_back(barrier);
+            return Ok(());
         }
 
-        Self::commit_resolved_turn(
-            runtime_state,
-            Self::resolved_turn(event, now, None, None),
-        )
-        .await
+        // Pure brain-state transition: no zone message emitted, no wait needed.
+        // The passthrough barrier is instantly drainable and keeps the queue ordered.
+        let barrier = TurnBarrier::new_passthrough(turn_id, event, now);
+        runtime_state.barrier_queue.push_back(barrier);
+        Ok(())
     }
 
-    /// Handle a `HeadlampZoneReady` reply from the twinlet.
-    /// Matches it against the current pending turn (by `turn_id` + `tell_attempt`):
-    /// - `PrimaryHeadlamp`: if the FSM now lands on `Off`, upgrade to `IgnitionOffReset` wait;
-    ///   otherwise commit the turn with the primary reply.
-    /// - `IgnitionOffReset`: commit with both replies.
-    /// - Mismatch: restore `pending_turn` unchanged (stale reply).
-    async fn on_headlamp_zone_ready(
+    // ── zone reply handlers ───────────────────────────────────────────────────
+
+    /// Handle a `ZoneReady` from a zone twinlet.
+    ///
+    /// Finds the barrier by `turn_id`; validates `tell_attempt`; calls
+    /// `act_on_zone_reply`.  If the primary reply reveals that the FSM will land on `Off`,
+    /// transitions the barrier to `IgnitionOffReset` phase instead of completing it.
+    ///
+    /// **Borrow-split pattern**: `twin_car` state is snapshotted *before* the mutable
+    /// borrow of `barrier_queue` so that the `fsm_step_lands_off` probe can read both
+    /// without violating the borrow checker.  The barrier is re-looked-up by `turn_id` in
+    /// a second mutable borrow to apply the `IgnitionOffReset` transition.
+    async fn on_zone_ready(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
+        zone_id: crate::fsm::ZoneId,
         turn_id: u64,
         tell_attempt: u32,
-        reply: HeadlampZoneReply,
+        reply: crate::digital_twin::ZoneReply,
     ) -> Result<(), ActorProcessingErr> {
-        let Some(pending) = runtime_state.pending_turn.take() else {
-            return Ok(());
+        let reply_hl = match reply {
+            crate::digital_twin::ZoneReply::Headlamp(r) => r,
         };
 
-        match pending {
-            PendingBrainTurn::PrimaryHeadlamp {
-                wait,
-                mut timer,
-                event,
-                now,
-                message: _,
-            } if wait.matches(turn_id, tell_attempt) => {
-                Self::abort_tell_back_timer(&mut timer);
-                if fsm_step_lands_off(
-                    runtime_state.twin_car.current_state(),
-                    runtime_state.twin_car.context(),
+        // Snapshot the committed twin state before the mutable borrow of barrier_queue.
+        let (current_state, current_ctx) = (
+            runtime_state.twin_car.current_state().clone(),
+            runtime_state.twin_car.context().clone(),
+        );
+
+        // Find the matching barrier, validate attempt, apply reply.
+        let needs_ignition_off_reset: Option<Instant> = {
+            let Some(barrier) = runtime_state
+                .barrier_queue
+                .iter_mut()
+                .find(|b| b.turn_id() == turn_id)
+            else {
+                return Ok(());
+            };
+
+            if !barrier.tell_attempt_matches(zone_id, tell_attempt) {
+                return Ok(()); // stale or mismatched reply — discard
+            }
+
+            barrier.act_on_zone_reply(zone_id, crate::digital_twin::ZoneReply::Headlamp(reply_hl.clone()));
+
+            // After the primary reply, check whether the FSM will land on Off.
+            if matches!(barrier.phase(), BarrierPhase::Primary) && barrier.is_complete() {
+                let event = barrier.event().clone();
+                let barrier_now = barrier.now();
+                let lands_off = fsm_step_lands_off(
+                    &current_state,
+                    &current_ctx,
                     &event,
-                    now,
-                    &ZoneReplies::with_headlamp(Some(reply.clone()), None),
-                ) {
-                    return Self::begin_headlamp_wait(
-                        brain,
-                        runtime_state,
-                        turn_id,
-                        HeadlampMessage::ResetForIgnitionOff,
-                        event,
-                        now,
-                        Some(reply),
-                    )
-                    .await;
-                }
-                Self::commit_resolved_turn(
-                    runtime_state,
-                    Self::resolved_turn(event, now, Some(reply), None),
-                )
-                .await?;
+                    barrier_now,
+                    &ZoneReplies::with_headlamp(Some(reply_hl.clone()), None),
+                );
+                if lands_off { Some(barrier_now) } else { None }
+            } else {
+                None
             }
-            PendingBrainTurn::IgnitionOffReset {
-                wait,
-                mut timer,
-                event,
-                now,
-                headlamp_reply,
-            } if wait.matches(turn_id, tell_attempt) => {
-                Self::abort_tell_back_timer(&mut timer);
-                Self::commit_resolved_turn(
-                    runtime_state,
-                    Self::resolved_turn(event, now, headlamp_reply, Some(reply)),
-                )
-                .await?;
-            }
-            other => {
-                runtime_state.pending_turn = Some(other);
+        }; // mutable borrow of barrier_queue released here
+
+        // If IgnitionOffReset is needed, transition the barrier and send the reset tell.
+        if let Some(barrier_now) = needs_ignition_off_reset {
+            let new_wait = TellBackWait::new(turn_id);
+            tell_headlamp_zone(
+                &runtime_state.headlamp_actor,
+                brain,
+                turn_id,
+                0,
+                HeadlampMessage::ResetForIgnitionOff,
+                barrier_now,
+            )?;
+            let new_timer = Self::arm_tell_back_timer(brain, turn_id, 0);
+            if let Some(barrier) = runtime_state
+                .barrier_queue
+                .iter_mut()
+                .find(|b| b.turn_id() == turn_id)
+            {
+                barrier.start_ignition_off_reset(new_wait, new_timer);
             }
         }
 
         Ok(())
     }
 
-    /// Handle a `TellBackTimeout`: retry the tell-back if attempts remain, or
-    /// forge a synthetic reply (exhausted) and commit the turn.
-    /// Mirrors the same structure as `on_headlamp_zone_ready`.
-    async fn on_tell_back_timeout(
+    /// Handle a `ZoneTellBackTimeout`.
+    ///
+    /// Validates the attempt, decides retry vs. give-up, re-tells or synthesises a reply.
+    async fn on_zone_timeout(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
+        zone_id: crate::fsm::ZoneId,
         turn_id: u64,
         tell_attempt: u32,
     ) -> Result<(), ActorProcessingErr> {
-        let Some(pending) = runtime_state.pending_turn.take() else {
-            return Ok(());
+        // Snapshot headlamp ctx for potential synthetic reply (before barrier borrow).
+        let headlamp_ctx = runtime_state.twin_car.context().headlamp.clone();
+
+        let outcome = {
+            let Some(barrier) = runtime_state
+                .barrier_queue
+                .iter_mut()
+                .find(|b| b.turn_id() == turn_id)
+            else {
+                return Ok(());
+            };
+            barrier.act_on_zone_timeout(zone_id, tell_attempt)
         };
 
-        match pending {
-            PendingBrainTurn::PrimaryHeadlamp {
-                wait,
-                mut timer,
-                event,
-                now,
-                message,
-            } if wait.matches(turn_id, tell_attempt) => {
-                Self::abort_tell_back_timer(&mut timer);
-                match on_tell_back_timeout(
-                    &runtime_state.twin_car.context().headlamp,
-                    wait,
-                ) {
-                    TellBackTimeoutOutcome::Retry(next) => {
-                        tell_headlamp_zone(
-                            &runtime_state.headlamp_actor,
-                            brain,
-                            turn_id,
-                            next.tell_attempt,
-                            message,
-                            now,
-                        )?;
-                        Self::arm_tell_back_timer(brain, next, &mut timer);
-                        runtime_state.pending_turn = Some(PendingBrainTurn::PrimaryHeadlamp {
-                            wait: next,
-                            timer,
-                            event,
-                            now,
-                            message,
-                        });
-                    }
-                    TellBackTimeoutOutcome::Exhausted(reply) => {
-                        Self::commit_resolved_turn(
-                            runtime_state,
-                            Self::resolved_turn(event, now, Some(reply), None),
-                        )
-                        .await?;
-                    }
+        match outcome {
+            TimeoutOutcome::Retry { next_attempt } => {
+                // Re-tell the zone with the next attempt number.
+                let (msg, barrier_now) = runtime_state
+                    .barrier_queue
+                    .iter()
+                    .find(|b| b.turn_id() == turn_id)
+                    .and_then(|b| b.zone_message(zone_id).map(|m| (m, b.now())))
+                    .ok_or_else(|| {
+                        ActorProcessingErr::from(std::io::Error::other(
+                            "timeout retry: no zone message stored",
+                        ))
+                    })?;
+
+                tell_headlamp_zone(
+                    &runtime_state.headlamp_actor,
+                    brain,
+                    turn_id,
+                    next_attempt,
+                    msg,
+                    barrier_now,
+                )?;
+                let new_timer = Self::arm_tell_back_timer(brain, turn_id, next_attempt);
+
+                if let Some(barrier) = runtime_state
+                    .barrier_queue
+                    .iter_mut()
+                    .find(|b| b.turn_id() == turn_id)
+                {
+                    barrier.store_retry_timer(zone_id, new_timer);
                 }
             }
-            PendingBrainTurn::IgnitionOffReset {
-                wait,
-                mut timer,
-                event,
-                now,
-                headlamp_reply,
-            } if wait.matches(turn_id, tell_attempt) => {
-                Self::abort_tell_back_timer(&mut timer);
-                match on_tell_back_timeout(
-                    &runtime_state.twin_car.context().headlamp,
-                    wait,
-                ) {
-                    TellBackTimeoutOutcome::Retry(next) => {
-                        tell_headlamp_zone(
-                            &runtime_state.headlamp_actor,
-                            brain,
-                            turn_id,
-                            next.tell_attempt,
-                            HeadlampMessage::ResetForIgnitionOff,
-                            now,
-                        )?;
-                        Self::arm_tell_back_timer(brain, next, &mut timer);
-                        runtime_state.pending_turn = Some(PendingBrainTurn::IgnitionOffReset {
-                            wait: next,
-                            timer,
-                            event,
-                            now,
-                            headlamp_reply,
-                        });
-                    }
-                    TellBackTimeoutOutcome::Exhausted(reply) => {
-                        Self::commit_resolved_turn(
-                            runtime_state,
-                            Self::resolved_turn(event, now, headlamp_reply, Some(reply)),
-                        )
-                        .await?;
-                    }
+            TimeoutOutcome::GaveUp => {
+                // All retries exhausted: synthesise a reply and close the zone's slot.
+                let synthetic = synthetic_unresponsive_headlamp_reply(&headlamp_ctx);
+                if let Some(barrier) = runtime_state
+                    .barrier_queue
+                    .iter_mut()
+                    .find(|b| b.turn_id() == turn_id)
+                {
+                    barrier.act_on_zone_reply(
+                        zone_id,
+                        crate::digital_twin::ZoneReply::Headlamp(synthetic),
+                    );
                 }
-            }
-            other => {
-                runtime_state.pending_turn = Some(other);
             }
         }
 
         Ok(())
     }
 
-    /// Handle a spontaneous headlamp actuation completion (detected by the headlamp actuator
-    /// polling during *another* zone's tell-back wait). Emitted as a synthetic FSM event.
-    async fn on_headlamp_zone_spontaneous(
+    /// Handle a spontaneous zone event (ACK timer, future assembly deadlines).
+    ///
+    /// These are not correlated to a brain `turn_id`, so they do not interact with
+    /// `barrier_queue`.  The event is committed directly; the drain loop runs afterwards
+    /// (called from the `handle` arm).
+    async fn on_zone_spontaneous(
         runtime_state: &mut VirtualCarRuntimeState,
-        direction: crate::fsm::FrontHeadlampSwitchDirection,
-        cause: crate::fsm::FrontHeadlampIncompleteCause,
-        reply: HeadlampZoneReply,
+        _zone_id: crate::fsm::ZoneId,
+        event: crate::digital_twin::ZoneSpontaneousEvent,
     ) -> Result<(), ActorProcessingErr> {
+        let crate::digital_twin::ZoneSpontaneousEvent::Headlamp {
+            direction,
+            cause,
+            reply,
+        } = event;
         Self::commit_resolved_turn(
             runtime_state,
             ResolvedTurn {
@@ -615,38 +531,36 @@ impl VirtualCarActor {
         .await
     }
 
-    /// Drain the FSM backlog as long as no turn is pending.
-    /// Called after every handler that might have consumed a pending turn.
-    async fn pump_fsm_backlog(
-        brain: &ActorRef<DigitalTwinCarVocabulary>,
+    // ── drain loop ────────────────────────────────────────────────────────────
+
+    /// Commit all complete barriers from the front of `barrier_queue`.
+    ///
+    /// **Head-of-buffer (HOB) invariant**: only the front barrier may be committed.
+    /// If the front is still waiting for a zone reply, later barriers in the queue —
+    /// even if their own zones have already replied — must wait.  This guarantees that
+    /// `commit_resolved_turn` is called in strict event-arrival order regardless of the
+    /// order in which zone twinlets reply.
+    async fn try_drain_barrier_queue(
         runtime_state: &mut VirtualCarRuntimeState,
     ) -> Result<(), ActorProcessingErr> {
-        while runtime_state.pending_turn.is_none() {
-            let Some((evt, now)) = runtime_state.fsm_backlog.pop_front()
-            else {
+        loop {
+            let Some(front) = runtime_state.barrier_queue.front() else {
                 break;
             };
-            Self::begin_fsm_turn(brain, runtime_state, evt, now).await?;
+            if !front.is_complete() {
+                // Front barrier is still awaiting a zone reply; nothing can proceed.
+                break;
+            }
+            let committed = runtime_state.barrier_queue.pop_front().expect("checked above");
+            let resolved = committed.into_resolved_turn();
+            Self::commit_resolved_turn(runtime_state, resolved).await?;
         }
         Ok(())
     }
 
-    /// Build a `ResolvedTurn` from the ingress event and optional headlamp replies.
-    fn resolved_turn(
-        ingress: FsmEvent,
-        now: Instant,
-        headlamp_ingress: Option<HeadlampZoneReply>,
-        headlamp_ignition_off_reset: Option<HeadlampZoneReply>,
-    ) -> ResolvedTurn {
-        ResolvedTurn {
-            ingress,
-            now,
-            zone_replies: ZoneReplies::with_headlamp(headlamp_ingress, headlamp_ignition_off_reset),
-        }
-    }
+    // ── quiescence & apply ────────────────────────────────────────────────────
 
-    /// Run the quiescence pipeline on the resolved turn, then apply the resulting
-    /// actuation actions and diagnostic emissions.
+    /// Run the quiescence pipeline on the resolved turn, then apply the result.
     async fn commit_resolved_turn(
         runtime_state: &mut VirtualCarRuntimeState,
         resolved: ResolvedTurn,
@@ -659,17 +573,14 @@ impl VirtualCarActor {
         Self::apply_committed_quiescence(runtime_state, quiescent).await
     }
 
-    /// Apply a quiescence result: step the twin, emit transition records,
-    /// execute domain actions (actuation), and fire diagnostic messages.
     async fn apply_committed_quiescence(
         runtime_state: &mut VirtualCarRuntimeState,
-        quiescent: QuiescentResult,
+        quiescent: crate::twin_runtime::twin_turn::QuiescentResult,
     ) -> Result<(), ActorProcessingErr> {
         let old_state = runtime_state.twin_car.current_state().clone();
         let headlamp_before = runtime_state.twin_car.context().headlamp.state;
         let final_step = quiescent.final_step();
         let headlamp_after = final_step.modified_ctx.headlamp.state;
-        let mut mode = ActorMode::Normal;
 
         for hop in &quiescent.hops {
             let record_seq = runtime_state.next_record_seq;
@@ -684,12 +595,7 @@ impl VirtualCarActor {
 
         for action in quiescent.merged_actions() {
             match action {
-                DomainAction::EnterMode(hint) => {
-                    mode = match hint {
-                        ActorModeHintFromDomain::Normal => ActorMode::Normal,
-                        ActorModeHintFromDomain::Transitioning => ActorMode::Transitioning,
-                    };
-                }
+                DomainAction::EnterMode(_) => {}
                 DomainAction::LogWarning(message) => {
                     if let Some(sink) = &runtime_state.diagnostic_sink {
                         let _ = sink.try_emit(diag_warning(
@@ -726,9 +632,7 @@ impl VirtualCarActor {
             }
         }
 
-        if let Some(direction) =
-            front_headlamp_confirmed_direction(headlamp_before, headlamp_after)
-        {
+        if let Some(direction) = front_headlamp_confirmed_direction(headlamp_before, headlamp_after) {
             if let Some(sink) = &runtime_state.diagnostic_sink {
                 let _ = sink.try_emit(diag_front_headlamp_confirmed(
                     runtime_state.twin_car.identity(),
@@ -737,12 +641,9 @@ impl VirtualCarActor {
             }
         }
 
-        let _ = mode;
         Ok(())
     }
 
-    /// Emit one transition record via the transition sink, falling back to the
-    /// diagnostic sink on overflow or channel closure.
     fn try_emit_transition_record(
         runtime_state: &mut VirtualCarRuntimeState,
         record_seq: u64,
@@ -776,7 +677,6 @@ impl VirtualCarActor {
         }
     }
 
-    /// Reply to a `GetStatus` RPC with the current `CarSnapshot`.
     fn reply_get_status(
         reply: RpcReplyPort<CarSnapshot>,
         twin_car: &DigitalTwinCar,
@@ -793,9 +693,6 @@ impl VirtualCarActor {
 }
 
 /// Classify a headlamp state change as a positive ACK settle, if any.
-/// Probes the domain state before and after the step: if `OnRequested→On` or
-/// `OffRequested→Ready`, the actuation completed positively.
-/// (`AckOff` now lands in `Ready`, not `Off` — assembly remains active after the lamp turns off.)
 fn front_headlamp_confirmed_direction(
     before: HeadlampState,
     after: HeadlampState,

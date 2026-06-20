@@ -43,7 +43,7 @@
   transition and (b) transitions cannot be interleaved (determinism is non-negotiable)
 
 ## The case of FSM's internal states
-- The Virtual Car actor's handle() and its call-call tree reaches the FSM in the same sync-call 
+- The Virtual Car actor's handle() and its call-tree reaches the FSM in the same sync-call 
   thread. Therefore, the transition() happens in the same thread. By the time the thread returns 
   to the handle() function, actor's mailbox may contain a new event and the actor is bound to 
   handle() that next. By this time though, the FSM has determined the next state of the Virtual Car.
@@ -97,3 +97,7 @@
   present action correctly (viz., 'Visibility is better now but it is raining').
 - Logic to deal with specific Tell-back messages must not be sprinkled in the main functions 
   that tie the Brain Actor and its FSM together
+- Headlamp assembly will be a template for the next assembly (yet to be introduced)
+- Health, Powertrain etc. are also assemblies but at the moment, they will remain in-memory 
+  contexts  but they will hold the current state of the assemblies, as if they are actors too; 
+  only the inquiries / updates are synchronous

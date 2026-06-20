@@ -1,13 +1,13 @@
 //! L4 headlamp twinlet — brain **tell**s [`HeadlampActorVocabulary::Apply`]; twinlet **tell**s
-//! [`DigitalTwinCarVocabulary::HeadlampZoneReady`] (correlated) or
-//! [`DigitalTwinCarVocabulary::HeadlampZoneSpontaneous`] (ACK timer).
+//! [`DigitalTwinCarVocabulary::ZoneReady`] (correlated) or
+//! [`DigitalTwinCarVocabulary::ZoneSpontaneous`] (ACK timer).
 
 use async_trait::async_trait;
 use ractor::concurrency::{Duration as RactorDuration, JoinHandle};
 use ractor::{Actor, ActorProcessingErr, ActorRef, MessagingErr};
 use std::time::Instant;
 
-use crate::digital_twin::DigitalTwinCarVocabulary;
+use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply, ZoneSpontaneousEvent};
 use crate::fsm::{FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection};
 use crate::vehicle_physics::{FRONT_HEADLAMP_OFF_ACK_WAIT, FRONT_HEADLAMP_ON_ACK_WAIT};
 use crate::vehicle_state::{HeadlampContext, HeadlampMessage, HeadlampState};
@@ -119,14 +119,15 @@ impl HeadlampActor {
         state.ctx = zone_reply.ctx.clone();
         maybe_arm_ack_timer(myself, state);
         brain
-            .send_message(DigitalTwinCarVocabulary::HeadlampZoneReady {
+            .send_message(DigitalTwinCarVocabulary::ZoneReady {
+                zone_id: crate::fsm::ZoneId::Headlamp,
                 turn_id,
                 tell_attempt,
-                reply: zone_reply,
+                reply: ZoneReply::Headlamp(zone_reply),
             })
             .map_err(|e| {
                 ActorProcessingErr::from(std::io::Error::other(format!(
-                    "HeadlampZoneReady tell-back: {e:?}"
+                    "ZoneReady tell-back: {e:?}"
                 )))
             })?;
         Ok(())
@@ -151,14 +152,17 @@ impl HeadlampActor {
         state.ctx = zone_reply.ctx.clone();
         abort_ack_timer(&mut state.ack_timer);
         brain
-            .send_message(DigitalTwinCarVocabulary::HeadlampZoneSpontaneous {
-                direction,
-                cause: FrontHeadlampIncompleteCause::TimedOut,
-                reply: zone_reply,
+            .send_message(DigitalTwinCarVocabulary::ZoneSpontaneous {
+                zone_id: crate::fsm::ZoneId::Headlamp,
+                event: ZoneSpontaneousEvent::Headlamp {
+                    direction,
+                    cause: FrontHeadlampIncompleteCause::TimedOut,
+                    reply: zone_reply,
+                },
             })
             .map_err(|e| {
                 ActorProcessingErr::from(std::io::Error::other(format!(
-                    "HeadlampZoneSpontaneous tell-back: {e:?}"
+                    "ZoneSpontaneous tell-back: {e:?}"
                 )))
             })?;
         Ok(())

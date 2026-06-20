@@ -7,3 +7,4 @@
 *.output
 Tangle-guard-output.txt
 .ralph/
+.ralph/checkpoint-worktree
