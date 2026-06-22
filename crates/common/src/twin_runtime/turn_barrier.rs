@@ -17,14 +17,8 @@
 //!                                        ├── Retry → store_retry_timer()
 //!                                        └── GaveUp → caller: act_on_zone_reply(synthetic)
 //!                                        │
-//!         [optional IgnitionOffReset phase: start_ignition_off_reset()]
-//!                                        │
 //!         is_complete() == true ─────────► drain loop → into_resolved_turn()
 //! ```
-//!
-//! ## Phase-6 note
-//! `start_ignition_off_reset` and `BarrierPhase::IgnitionOffReset` will be deleted when
-//! `fsm_step_lands_off` / `ResetForIgnitionOff` are removed (Phase 6).
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::Instant;
@@ -37,25 +31,10 @@ use crate::fsm::{FsmEvent, ZoneId};
 use crate::twin_runtime::twin_turn::ResolvedTurn;
 use crate::twin_runtime::zone_replies::ZoneReplies;
 use crate::twin_runtime::zone_tell_back::TellBackWait;
-use crate::vehicle_state::{HeadlampMessage, HeadlampZoneReply};
+use crate::vehicle_state::HeadlampMessage;
 
 /// Handle to the ractor timer task that sends `ZoneTellBackTimeout` to the brain.
 pub(crate) type TellBackTimer = JoinHandle<Result<(), MessagingErr<DigitalTwinCarVocabulary>>>;
-
-// ── BarrierPhase ─────────────────────────────────────────────────────────────
-
-/// Internal two-phase state for turns that need an ignition-off headlamp reset.
-///
-/// Deleted in Phase 6 along with `fsm_step_lands_off`.
-pub(crate) enum BarrierPhase {
-    /// Normal: waiting for (or already received) the primary zone reply.
-    Primary,
-    /// Primary complete; waiting for the ignition-off reset reply.
-    /// Carries `primary_reply` so `into_resolved_turn` can build the correct [`ZoneReplies`].
-    IgnitionOffReset {
-        primary_reply: Option<HeadlampZoneReply>,
-    },
-}
 
 // ── TimeoutOutcome ────────────────────────────────────────────────────────────
 
@@ -75,7 +54,7 @@ pub(crate) enum TimeoutOutcome {
 ///
 /// All fields are private.  Identity (`turn_id`) is assigned at construction via
 /// `VirtualCarRuntimeState::alloc_turn_id` and is immutable thereafter.  Read-only
-/// getters expose the four "header" fields to the actor; all mutation goes through
+/// getters expose the three "header" fields to the actor; all mutation goes through
 /// the dedicated methods below.
 pub(crate) struct TurnBarrier {
     /// Monotonically increasing identity assigned by `VirtualCarRuntimeState::alloc_turn_id`;
@@ -89,10 +68,6 @@ pub(crate) struct TurnBarrier {
     /// so that zone tells during retries carry the *original* arrival time.
     /// Immutable after construction.
     now: Instant,
-    /// Tracks whether a second (ignition-off reset) zone tell is in progress.
-    /// `Primary` covers the common path; `IgnitionOffReset` is an interim shim
-    /// deleted in Phase 6.  Mutated only via `start_ignition_off_reset`.
-    phase: BarrierPhase,
 
     /// Zones for which a reply has been requested but not yet received.
     /// `BTreeSet` gives deterministic iteration order across zones (important for
@@ -118,7 +93,6 @@ impl TurnBarrier {
             turn_id,
             event,
             now,
-            phase: BarrierPhase::Primary,
             pending: BTreeSet::new(),
             zone_waits: HashMap::new(),
             zone_timers: HashMap::new(),
@@ -153,19 +127,9 @@ impl TurnBarrier {
         self.turn_id
     }
 
-    /// The ingress FSM event; inspected by `on_zone_ready` to probe `fsm_step_lands_off`.
-    pub fn event(&self) -> &FsmEvent {
-        &self.event
-    }
-
     /// The original event arrival timestamp; re-used on retries and forwarded to `ResolvedTurn`.
     pub fn now(&self) -> Instant {
         self.now
-    }
-
-    /// The current barrier phase; inspected by `on_zone_ready` to decide `IgnitionOffReset`.
-    pub fn phase(&self) -> &BarrierPhase {
-        &self.phase
     }
 
     // ── query ────────────────────────────────────────────────────────────────
@@ -251,26 +215,6 @@ impl TurnBarrier {
         }
     }
 
-    /// Transition to `IgnitionOffReset` phase (Phase 6 deletes this).
-    ///
-    /// The primary headlamp reply is extracted from `zone_replies` and stashed in
-    /// the `IgnitionOffReset` phase enum so that `into_resolved_turn` can later
-    /// present both the primary and reset replies to the commit layer in the correct
-    /// order.  The barrier is then re-opened (`pending` gets `Headlamp` again) to
-    /// wait for the headlamp's acknowledgement of the `ResetForIgnitionOff` message.
-    pub fn start_ignition_off_reset(&mut self, wait: TellBackWait, timer: TellBackTimer) {
-        let primary_reply = self.zone_replies.remove(&ZoneId::Headlamp).map(|r| match r {
-            ZoneReply::Headlamp(hl) => hl,
-        });
-        self.phase = BarrierPhase::IgnitionOffReset { primary_reply };
-        let msg = HeadlampMessage::ResetForIgnitionOff;
-        // Re-register Headlamp as pending for the second (reset) tell-back.
-        self.pending.insert(ZoneId::Headlamp);
-        self.zone_messages.insert(ZoneId::Headlamp, msg);
-        self.zone_waits.insert(ZoneId::Headlamp, wait);
-        self.zone_timers.insert(ZoneId::Headlamp, timer);
-    }
-
     /// Abort all live timers.  Called in `post_stop` during actor teardown.
     pub fn abort_all_timers(&mut self) {
         for (_, timer) in self.zone_timers.drain() {
@@ -290,15 +234,9 @@ impl TurnBarrier {
             ZoneReply::Headlamp(hl) => Some(hl),
         });
 
-        let zone_replies = match self.phase {
-            // Common path: at most one headlamp reply from the primary tell.
-            BarrierPhase::Primary => ZoneReplies::with_headlamp(headlamp_reply, None),
-            // Two-phase path: `primary_reply` is the normal headlamp acknowledge;
-            // `headlamp_reply` here is the response to `ResetForIgnitionOff`.
-            BarrierPhase::IgnitionOffReset { primary_reply } => {
-                ZoneReplies::with_headlamp(primary_reply, headlamp_reply)
-            }
-        };
+        let zone_replies = headlamp_reply
+            .map(ZoneReplies::with_headlamp_ingress)
+            .unwrap_or_default();
 
         ResolvedTurn {
             ingress: self.event,

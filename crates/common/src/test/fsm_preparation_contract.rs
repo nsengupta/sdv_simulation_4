@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, ZoneId};
-use crate::vehicle_state::VehicleContext;
+use crate::twin_runtime::zone_turn::zone_message_for_event;
+use crate::vehicle_state::{HeadlampMessage, VehicleContext};
 
 fn ctx() -> VehicleContext {
     VehicleContext::default()
@@ -109,9 +110,42 @@ fn test_stop_assemblies_action_emitted_on_power_off_from_idle() {
     );
 }
 
+// --- zone_message_for_event state-aware routing tests ---
+
+#[test]
+fn test_zone_message_for_event_returns_none_during_preparing_to_start() {
+    let event = FsmEvent::UpdateAmbientLux(10);
+    let result = zone_message_for_event(&event, &FsmState::PreparingToStart);
+    assert!(
+        result.is_none(),
+        "zone_message_for_event must return None during PreparingToStart; got {result:?}"
+    );
+}
+
+#[test]
+fn test_zone_message_for_event_returns_none_during_preparing_to_stop() {
+    let event = FsmEvent::UpdateAmbientLux(10);
+    let result = zone_message_for_event(&event, &FsmState::PreparingToStop);
+    assert!(
+        result.is_none(),
+        "zone_message_for_event must return None during PreparingToStop; got {result:?}"
+    );
+}
+
+#[test]
+fn test_zone_message_for_event_returns_some_during_idle() {
+    let event = FsmEvent::UpdateAmbientLux(10);
+    let result = zone_message_for_event(&event, &FsmState::Idle);
+    assert_eq!(
+        result,
+        Some(HeadlampMessage::AmbientLux(10)),
+        "zone_message_for_event must delegate to user_event_to_headlamp_tell when Idle"
+    );
+}
+
 // --- Ledger record exclusion tests ---
 //
-// `StartAssemblies` / `StopAssemblies` are internal coordination signals (like `EnterMode`),
+// `StartAssemblies` / `StopAssemblies` are internal coordination signals,
 // not domain intents. They must be excluded from `transition_record.actions`.
 
 #[test]

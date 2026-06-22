@@ -17,6 +17,25 @@ pub struct ZoneTurnResult {
     pub headlamp_before: HeadlampState,
 }
 
+/// State-aware zone routing for a *user-originated* [`FsmEvent`].
+///
+/// Returns `None` when the FSM is in a lifecycle transition state (`PreparingToStart` or
+/// `PreparingToStop`): no zone tell is emitted for user events during assembly startup or
+/// shutdown.  For all other states, delegates to [`user_event_to_headlamp_tell`].
+///
+/// Used by `begin_fsm_turn` to decide between a zone-directed [`TurnBarrier`] and a
+/// [`PassthroughBarrier`].  Phase 7 generalises the return type to
+/// `Option<(ZoneId, ZoneMessage)>` when a second assembly (Wiper) is introduced.
+pub(crate) fn zone_message_for_event(
+    event: &FsmEvent,
+    state: &FsmState,
+) -> Option<HeadlampMessage> {
+    match state {
+        FsmState::PreparingToStart | FsmState::PreparingToStop => None,
+        _ => user_event_to_headlamp_tell(event),
+    }
+}
+
 /// Map a *user-originated* [`FsmEvent`] to the [`HeadlampMessage`] that must be told to
 /// the headlamp zone twinlet.  Returns `None` for events that do not require a zone tell
 /// (e.g. `PowerOn`, `TimerTick`) or for assembly lifecycle events (`AssemblyZoneReady`),

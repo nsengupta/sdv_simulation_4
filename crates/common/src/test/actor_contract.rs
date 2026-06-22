@@ -8,7 +8,6 @@ use crate::test::{
     expect_actuation_command, inject_matching_ack, inject_matching_nack,
     power_on_to_idle, ActorGuard,
 };
-use crate::vehicle_state::HeadlampContext;
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController, VssSignal};
 use ractor::concurrency::Duration;
 use tokio::sync::mpsc;
@@ -159,11 +158,6 @@ async fn scenario_actuation_ack_round_trip_via_helper() {
     let (actuation_tx, mut actuation_rx) = mpsc::channel(16);
     let runtime_options = VehicleControllerRuntimeOptions {
         actuation_command_tx: Some(actuation_tx),
-        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
-        initial_headlamp_ctx: Some(HeadlampContext {
-            state: HeadlampState::Ready,
-            ack_pending_since: None,
-        }),
         ..Default::default()
     };
     let (controller, handle) =
@@ -213,11 +207,6 @@ async fn scenario_actuation_ack_surfaces_confirmation_on_diagnostic_sink() {
     let runtime_options = VehicleControllerRuntimeOptions {
         diagnostic_tx: Some(diag_tx),
         actuation_command_tx: Some(actuation_tx),
-        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
-        initial_headlamp_ctx: Some(HeadlampContext {
-            state: HeadlampState::Ready,
-            ack_pending_since: None,
-        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -268,11 +257,6 @@ async fn scenario_actuation_nack_round_trip_via_helper() {
     let (actuation_tx, mut actuation_rx) = mpsc::channel(16);
     let runtime_options = VehicleControllerRuntimeOptions {
         actuation_command_tx: Some(actuation_tx),
-        // Phase 2: start in Ready so low-lux triggers OnRequested (BecomeOn wired in Phase 5).
-        initial_headlamp_ctx: Some(HeadlampContext {
-            state: HeadlampState::Ready,
-            ack_pending_since: None,
-        }),
         ..Default::default()
     };
     let (controller, handle) =

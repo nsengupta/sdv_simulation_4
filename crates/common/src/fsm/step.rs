@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::vehicle_state::VehicleContext;
-use super::machineries::{ActorModeHintFromDomain, DomainAction, FsmAction, FsmEvent, FsmState, ZoneId};
+use super::machineries::{DomainAction, FsmAction, FsmEvent, FsmState, ZoneId};
 use super::transition_map::{output, transition, TransitionNote};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,26 +80,15 @@ pub fn step(
         }
     }
 
-    if matches!(
-        next_state,
-        FsmState::ExtremeOperationWarning(_) | FsmState::DrivingDangerously
-    ) {
-        actions.push(DomainAction::EnterMode(ActorModeHintFromDomain::Transitioning));
-    } else {
-        actions.push(DomainAction::EnterMode(ActorModeHintFromDomain::Normal));
-    }
-
-    // Ledger record: drop internal coordination signals (EnterMode, StartAssemblies,
-    // StopAssemblies). These are control hints consumed by the actor, not domain intents.
+    // Ledger record: drop internal coordination signals (StartAssemblies, StopAssemblies).
+    // These are control hints consumed by the actor, not domain intents.
     // `AssemblyZoneReady` is also excluded — it is a zone-reply correlation signal,
     // not a domain intent, and its effect is already captured by the resulting state change.
     let recorded_actions: Vec<DomainAction> = actions
         .iter()
         .filter(|action| !matches!(
             action,
-            DomainAction::EnterMode(_)
-                | DomainAction::StartAssemblies
-                | DomainAction::StopAssemblies
+            DomainAction::StartAssemblies | DomainAction::StopAssemblies
         ))
         .cloned()
         .collect();

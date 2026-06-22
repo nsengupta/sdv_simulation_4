@@ -117,16 +117,12 @@ impl From<&FrontHeadlampIncompleteCause> for PublishedFrontHeadlampIncompleteCau
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedOperational {
     LightingUnsafe,
-    AssembliesReady,
-    AssembliesStopped,
 }
 
 impl From<&crate::fsm::Operational> for PublishedOperational {
     fn from(op: &crate::fsm::Operational) -> Self {
         match op {
             crate::fsm::Operational::LightingUnsafe => Self::LightingUnsafe,
-            crate::fsm::Operational::AssembliesReady => Self::AssembliesReady,
-            crate::fsm::Operational::AssembliesStopped => Self::AssembliesStopped,
         }
     }
 }
@@ -173,7 +169,7 @@ impl From<&FsmEvent> for PublishedFsmEvent {
 }
 
 /// World-facing domain intents. Mirrors [`DomainAction`] **minus** runtime control hints
-/// (`EnterMode`, `StartAssemblies`, `StopAssemblies`), which are already excluded from the
+/// (`StartAssemblies`, `StopAssemblies`), which are already excluded from the
 /// recorded action list (WI-1) and carry no ledger-level meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublishedDomainAction {
@@ -196,9 +192,7 @@ impl PublishedDomainAction {
             DomainAction::RequestFrontHeadlampOn => Some(Self::RequestFrontHeadlampOn),
             DomainAction::RequestFrontHeadlampOff => Some(Self::RequestFrontHeadlampOff),
             // Internal coordination signals: not domain intents, not ledger-visible.
-            DomainAction::EnterMode(_)
-            | DomainAction::StartAssemblies
-            | DomainAction::StopAssemblies => None,
+            DomainAction::StartAssemblies | DomainAction::StopAssemblies => None,
         }
     }
 }

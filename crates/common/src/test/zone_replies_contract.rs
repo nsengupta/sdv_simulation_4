@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::fsm::{FsmEvent, FsmState, HeadlampState};
 use crate::twin_runtime::{commit_resolved_turn, twin_turn, ResolvedTurn, ZoneReplies};
+use crate::twin_runtime::zone_replies::HeadlampReplies;
 use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply, VehicleContext};
 use crate::vehicle_physics::{FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD};
 
@@ -14,6 +15,56 @@ fn driving_ctx() -> VehicleContext {
     ctx.powertrain.refresh_speed();
     ctx
 }
+
+// --- Phase 6 structural tests ---
+
+#[test]
+fn test_zone_replies_simulate_locally_has_no_ignition_off_reset() {
+    let r = ZoneReplies::simulate_locally();
+    assert_eq!(
+        r.headlamp.ingress, None,
+        "simulate_locally must produce ingress=None"
+    );
+    // Structural guard: HeadlampReplies has exactly one field.
+    // If ignition_off_reset were re-added, this destructuring would fail to compile.
+    let HeadlampReplies { ingress: _ } = r.headlamp;
+}
+
+#[test]
+fn test_power_off_does_not_speculatively_run_zone_turn() {
+    // PowerOff → PreparingToStop (not Off), so the old IgnitionOffReset block must not fire.
+    // This is a regression guard: if IgnitionOffReset logic is re-introduced, this test
+    // would detect an unexpected context mutation.
+    let ctx = VehicleContext::default();
+    let result = twin_turn(
+        &FsmState::Idle,
+        &ctx,
+        &FsmEvent::PowerOff,
+        Instant::now(),
+    );
+    assert_eq!(result.next_state, FsmState::PreparingToStop);
+    // Headlamp context must be unchanged (no ResetForIgnitionOff applied).
+    assert_eq!(
+        result.modified_ctx.headlamp.state,
+        ctx.headlamp.state,
+        "PowerOff must not mutate headlamp state (no speculative IgnitionOffReset)"
+    );
+}
+
+#[test]
+fn test_headlamp_replies_with_headlamp_ingress_is_the_only_non_default_constructor() {
+    let embed = HeadlampZoneReply {
+        ctx: HeadlampContext {
+            state: HeadlampState::On,
+            ack_pending_since: None,
+        },
+        outcomes: vec![],
+    };
+    let r = ZoneReplies::with_headlamp_ingress(embed.clone());
+    assert_eq!(r.headlamp.ingress, Some(embed));
+}
+
+// --- Original tests ---
 
 #[test]
 fn given_headlamp_ingress_embed_when_commit_resolved_turn_then_uses_tell_back_not_local_zone() {

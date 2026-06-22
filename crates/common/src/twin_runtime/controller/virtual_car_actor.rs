@@ -35,11 +35,11 @@ use crate::fsm::{
     self, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState, HeadlampState,
 };
 use crate::twin_runtime::headlamp_actor::{tell_headlamp_zone, HeadlampActor, HeadlampActorMsg, HeadlampActorState};
-use crate::twin_runtime::twin_turn::{commit_resolved_turn as resolve_quiescence, fsm_step_lands_off, ResolvedTurn};
+use crate::twin_runtime::twin_turn::{commit_resolved_turn as resolve_quiescence, ResolvedTurn};
 use crate::twin_runtime::ZoneReplies;
 use crate::twin_runtime::zone_tell_back::{synthetic_unresponsive_headlamp_reply, TellBackWait};
-use crate::twin_runtime::zone_turn::user_event_to_headlamp_tell;
-use crate::twin_runtime::turn_barrier::{BarrierEntry, BarrierPhase, PassthroughBarrier, TellBackTimer, TimeoutOutcome, TurnBarrier};
+use crate::twin_runtime::zone_turn::zone_message_for_event;
+use crate::twin_runtime::turn_barrier::{BarrierEntry, PassthroughBarrier, TellBackTimer, TimeoutOutcome, TurnBarrier};
 use crate::vehicle_state::{HeadlampMessage, VehicleContext};
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
 use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
@@ -169,18 +169,14 @@ impl Actor for VirtualCarActor {
                 Arc::new(DefaultActuationManager::default())
             };
 
-        let mut initial_ctx = VehicleContext::default();
-        if let Some(hl_ctx) = args.runtime_options.initial_headlamp_ctx.clone() {
-            initial_ctx.headlamp = hl_ctx;
-        }
         let (headlamp_actor, _) = ractor::spawn::<HeadlampActor>(HeadlampActorState::new(
-            initial_ctx.headlamp.clone(),
+            Default::default(),
             args.runtime_options.test_silent_headlamp,
         ))
         .await?;
 
         Ok(VirtualCarRuntimeState {
-            twin_car: DigitalTwinCar::new(identity, FsmState::Off, initial_ctx)?,
+            twin_car: DigitalTwinCar::new(identity, FsmState::Off, VehicleContext::default())?,
             headlamp_actor,
             self_ref: myself.clone(),
             next_turn_id: 1,
@@ -223,7 +219,6 @@ impl Actor for VirtualCarActor {
                 reply,
             } => {
                 Self::on_zone_ready(
-                    &myself,
                     runtime_state,
                     zone_id,
                     turn_id,
@@ -294,18 +289,15 @@ impl VirtualCarActor {
     /// Assign a turn ID, create a barrier entry, tell any required zone(s), and push
     /// the entry onto the back of `barrier_queue`.
     ///
-    /// Three mutually exclusive paths, tried in priority order:
+    /// Two mutually exclusive paths:
     ///
-    /// 1. **Zone-directed** — the user event maps to a headlamp message (e.g. `UpdateAmbientLux`
-    ///    → `AmbientLux`).  A [`TurnBarrier`] with `Headlamp` pending is created; the zone gets
-    ///    a tell and a timer.
+    /// 1. **Zone-directed** — `zone_message_for_event` returns `Some`.  A [`TurnBarrier`]
+    ///    with `Headlamp` pending is created; the zone gets a tell and a timer.
     ///
-    /// 2. **Ignition-off reset** — no headlamp message, but the FSM will land on `Off` given
-    ///    the current context.  A `ResetForIgnitionOff` is sent directly and the barrier enters
-    ///    `IgnitionOffReset` phase.  Removed in Phase 6.
-    ///
-    /// 3. **Passthrough** — no zone interaction at all; the [`PassthroughBarrier`] is instantly
-    ///    drainable and keeps the queue ordered.
+    /// 2. **Passthrough** — `zone_message_for_event` returns `None`.  The
+    ///    [`PassthroughBarrier`] is instantly drainable and keeps the queue ordered.
+    ///    This covers events with no zone mapping (e.g. `PowerOn`, `TimerTick`) AND
+    ///    user events arriving during `PreparingToStart` or `PreparingToStop`.
     ///
     /// Note: `AssemblyZoneReady` events never go through `begin_fsm_turn` — assembly barriers
     /// are created in `apply_committed_quiescence` when `StartAssemblies`/`StopAssemblies` is
@@ -318,8 +310,8 @@ impl VirtualCarActor {
     ) -> Result<(), ActorProcessingErr> {
         let turn_id = runtime_state.alloc_turn_id();
 
-        // Primary headlamp zone tell (zone-directed user event).
-        if let Some(message) = user_event_to_headlamp_tell(&event) {
+        // Zone-directed: event maps to a headlamp message in the current FSM state.
+        if let Some(message) = zone_message_for_event(&event, runtime_state.twin_car.current_state()) {
             let wait = TellBackWait::new(turn_id);
             tell_headlamp_zone(
                 &runtime_state.headlamp_actor,
@@ -336,28 +328,7 @@ impl VirtualCarActor {
             return Ok(());
         }
 
-        // Pure ignition-off reset: event has no headlamp message, but FSM will land on Off.
-        // After Phase 5 this path is unreachable: PowerOff → PreparingToStop (not Off),
-        // and AssemblyZoneReady is excluded from begin_fsm_turn.  Phase 6 removes it.
-        if fsm_step_lands_off(
-            runtime_state.twin_car.current_state(),
-            runtime_state.twin_car.context(),
-            &event,
-            now,
-            &ZoneReplies::simulate_locally(),
-        ) {
-            let msg = HeadlampMessage::ResetForIgnitionOff;
-            let wait = TellBackWait::new(turn_id);
-            tell_headlamp_zone(&runtime_state.headlamp_actor, brain, turn_id, 0, msg, now)?;
-            let timer = Self::arm_tell_back_timer(brain, turn_id, 0);
-            let mut barrier = TurnBarrier::new(turn_id, event, now);
-            barrier.start_ignition_off_reset(wait, timer);
-            runtime_state.barrier_queue.push_back(BarrierEntry::Waiting(barrier));
-            return Ok(());
-        }
-
-        // Pure brain-state transition: no zone message emitted, no wait needed.
-        // PassthroughBarrier is instantly drainable and keeps the queue ordered.
+        // Passthrough: no zone message for this event in the current state.
         let passthrough = PassthroughBarrier::new(turn_id, event, now);
         runtime_state.barrier_queue.push_back(BarrierEntry::Passthrough(passthrough));
         Ok(())
@@ -367,16 +338,8 @@ impl VirtualCarActor {
 
     /// Handle a `ZoneReady` from a zone twinlet.
     ///
-    /// Finds the barrier by `turn_id`; validates `tell_attempt`; calls
-    /// `act_on_zone_reply`.  If the primary reply reveals that the FSM will land on `Off`,
-    /// transitions the barrier to `IgnitionOffReset` phase instead of completing it.
-    ///
-    /// **Borrow-split pattern**: `twin_car` state is snapshotted *before* the mutable
-    /// borrow of `barrier_queue` so that the `fsm_step_lands_off` probe can read both
-    /// without violating the borrow checker.  The barrier is re-looked-up by `turn_id` in
-    /// a second mutable borrow to apply the `IgnitionOffReset` transition.
+    /// Finds the barrier by `turn_id`; validates `tell_attempt`; calls `act_on_zone_reply`.
     async fn on_zone_ready(
-        brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
         zone_id: crate::fsm::ZoneId,
         turn_id: u64,
@@ -387,71 +350,22 @@ impl VirtualCarActor {
             crate::digital_twin::ZoneReply::Headlamp(r) => r,
         };
 
-        // Snapshot the committed twin state before the mutable borrow of barrier_queue.
-        let (current_state, current_ctx) = (
-            runtime_state.twin_car.current_state().clone(),
-            runtime_state.twin_car.context().clone(),
-        );
+        let Some(entry) = runtime_state
+            .barrier_queue
+            .iter_mut()
+            .find(|e| e.turn_id() == turn_id)
+        else {
+            return Ok(());
+        };
+        let Some(barrier) = entry.as_waiting_mut() else {
+            return Ok(()); // passthrough entries have no pending zones
+        };
 
-        // Find the matching barrier, validate attempt, apply reply.
-        let needs_ignition_off_reset: Option<Instant> = {
-            let Some(entry) = runtime_state
-                .barrier_queue
-                .iter_mut()
-                .find(|e| e.turn_id() == turn_id)
-            else {
-                return Ok(());
-            };
-            let Some(barrier) = entry.as_waiting_mut() else {
-                return Ok(()); // passthrough entries have no pending zones
-            };
-
-            if !barrier.tell_attempt_matches(zone_id, tell_attempt) {
-                return Ok(()); // stale or mismatched reply — discard
-            }
-
-            barrier.act_on_zone_reply(zone_id, crate::digital_twin::ZoneReply::Headlamp(reply_hl.clone()));
-
-            // After the primary reply, check whether the FSM will land on Off.
-            if matches!(barrier.phase(), BarrierPhase::Primary) && barrier.is_complete() {
-                let event = barrier.event().clone();
-                let barrier_now = barrier.now();
-                let lands_off = fsm_step_lands_off(
-                    &current_state,
-                    &current_ctx,
-                    &event,
-                    barrier_now,
-                    &ZoneReplies::with_headlamp(Some(reply_hl.clone()), None),
-                );
-                if lands_off { Some(barrier_now) } else { None }
-            } else {
-                None
-            }
-        }; // mutable borrow of barrier_queue released here
-
-        // If IgnitionOffReset is needed, transition the barrier and send the reset tell.
-        if let Some(barrier_now) = needs_ignition_off_reset {
-            let new_wait = TellBackWait::new(turn_id);
-            tell_headlamp_zone(
-                &runtime_state.headlamp_actor,
-                brain,
-                turn_id,
-                0,
-                HeadlampMessage::ResetForIgnitionOff,
-                barrier_now,
-            )?;
-            let new_timer = Self::arm_tell_back_timer(brain, turn_id, 0);
-            if let Some(entry) = runtime_state
-                .barrier_queue
-                .iter_mut()
-                .find(|e| e.turn_id() == turn_id)
-            {
-                if let Some(barrier) = entry.as_waiting_mut() {
-                    barrier.start_ignition_off_reset(new_wait, new_timer);
-                }
-            }
+        if !barrier.tell_attempt_matches(zone_id, tell_attempt) {
+            return Ok(()); // stale or mismatched reply — discard
         }
 
+        barrier.act_on_zone_reply(zone_id, crate::digital_twin::ZoneReply::Headlamp(reply_hl));
         Ok(())
     }
 
@@ -628,7 +542,6 @@ impl VirtualCarActor {
 
         for action in quiescent.merged_actions() {
             match action {
-                DomainAction::EnterMode(_) => {}
                 DomainAction::LogWarning(message) => {
                     if let Some(sink) = &runtime_state.diagnostic_sink {
                         let _ = sink.try_emit(diag_warning(

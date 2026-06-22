@@ -38,10 +38,6 @@ pub enum ZoneId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operational {
     LightingUnsafe,
-    /// All managed assemblies confirmed ready after a `StartAssemblies` barrier.
-    AssembliesReady,
-    /// All managed assemblies confirmed stopped after a `StopAssemblies` barrier.
-    AssembliesStopped,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,12 +77,6 @@ pub enum FsmAction {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActorModeHintFromDomain {
-    Normal,
-    Transitioning,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum DomainAction {
     StartBuzzer,
@@ -101,7 +91,6 @@ pub enum DomainAction {
     /// Actor must stop all managed assemblies (push shutdown `TurnBarrier`).
     /// Emitted on the `Idle → PreparingToStop` transition.
     StopAssemblies,
-    EnterMode(ActorModeHintFromDomain),
 }
 
 impl From<&FsmState> for VehicleState {

@@ -1,6 +1,6 @@
 //! Collected zone tell-back embeds for one external hop (L4 orchestration).
 //!
-//! Actor path: brain fills this after tell-back(s). Pure tests use [`ZoneReplies::simulate_locally`].
+//! Pure tests use [`ZoneReplies::simulate_locally`].
 //! Add a field per actorified zone — do not add top-level `headlamp_reply` on [`ResolvedTurn`].
 
 use crate::vehicle_state::HeadlampZoneReply;
@@ -9,10 +9,8 @@ use crate::vehicle_state::HeadlampZoneReply;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HeadlampReplies {
     /// Tell-back for the headlamp message demuxed from this hop's FSM ingress
-    /// ([`super::zone_turn::fsm_event_headlamp_message`]); `None` on pure/local path.
+    /// ([`super::zone_turn::user_event_to_headlamp_tell`]); `None` on pure/local path.
     pub ingress: Option<HeadlampZoneReply>,
-    /// Tell-back for ignition-off reset when landing in [`crate::fsm::FsmState::Off`].
-    pub ignition_off_reset: Option<HeadlampZoneReply>,
 }
 
 /// All zone embeds collected before [`super::commit_resolved_turn`].
@@ -31,19 +29,6 @@ impl ZoneReplies {
         Self {
             headlamp: HeadlampReplies {
                 ingress: Some(ingress),
-                ignition_off_reset: None,
-            },
-        }
-    }
-
-    pub fn with_headlamp(
-        ingress: Option<HeadlampZoneReply>,
-        ignition_off_reset: Option<HeadlampZoneReply>,
-    ) -> Self {
-        Self {
-            headlamp: HeadlampReplies {
-                ingress,
-                ignition_off_reset,
             },
         }
     }

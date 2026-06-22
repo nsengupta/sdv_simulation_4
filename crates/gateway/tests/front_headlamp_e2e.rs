@@ -46,6 +46,9 @@ async fn controller_fsm_front_headlamp_ack_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
+    // Phase 6: wait for startup barrier to drain (BecomeOn → Ready) before sending user events.
+    // AmbientLux during PreparingToStart is a PassthroughBarrier (zone_message_for_event = None).
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -79,6 +82,8 @@ async fn controller_fsm_front_headlamp_nack_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
+    // Phase 6: wait for startup barrier to drain before sending user events.
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -91,12 +96,14 @@ async fn controller_fsm_front_headlamp_nack_path() {
         })
         .await
         .expect("nack reject event");
+    // After NACK on OnRequested → ActuationIncomplete(On) → Back to Ready (assembly active).
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(300)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Ready);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }
 
@@ -111,6 +118,10 @@ async fn controller_fsm_front_headlamp_no_response_timeout_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
+    // Phase 6: wait for startup barrier to drain (headlamp → Ready, FSM → Idle) before
+    // sending the lux event.  AmbientLux during PreparingToStart is a PassthroughBarrier;
+    // the headlamp would never reach OnRequested and the ACK timer would never fire.
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -120,12 +131,13 @@ async fn controller_fsm_front_headlamp_no_response_timeout_path() {
 
     // No ACK/NACK event sent: headlamp twinlet ACK timer fires without gateway TimerTick.
     tokio::time::sleep(FRONT_HEADLAMP_ON_ACK_WAIT + Duration::from_millis(25)).await;
-    wait_headlamp_state(&controller, HeadlampState::Off, Duration::from_millis(500)).await;
+    // After ACK timeout → ActuationIncomplete(On) → Back to Ready (assembly active).
+    wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
 
     let snapshot = controller
         .get_snapshot(Some(Duration::from_millis(300)))
         .await
         .expect("snapshot");
-    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Off);
+    assert_eq!(snapshot.context().headlamp.state, HeadlampState::Ready);
     assert!(snapshot.context().headlamp.ack_pending_since.is_none());
 }

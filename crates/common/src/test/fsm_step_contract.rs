@@ -58,34 +58,37 @@ fn test_step_derive_ctx_and_warning_flow() {
 }
 
 #[test]
-fn test_transition_record_carries_intended_actions_without_enter_mode() {
-    // Driving + redline RPM enters ExtremeOperationWarning, which emits StartBuzzer (+
-    // warnings) plus an EnterMode hint for the actor.
+fn test_transition_record_carries_intended_actions_without_assembly_signals() {
+    // PowerOn transitions Off → PreparingToStart, emitting StartAssemblies as an
+    // internal coordination signal.  The ledger record must exclude it while the
+    // execution feed retains it so the actor can act on it.
     let result = twin_turn(
-        &FsmState::Driving,
+        &FsmState::Off,
         &valid_twin_context(),
-        &FsmEvent::UpdateRpm(5600),
+        &FsmEvent::PowerOn,
         Instant::now(),
     );
 
-    // The execution feed keeps EnterMode (the actor consumes it to set its mode).
-    assert!(result
-        .actions
-        .iter()
-        .any(|action| matches!(action, DomainAction::EnterMode(_))));
+    // The execution feed keeps StartAssemblies (the actor creates assembly barriers from it).
+    assert!(
+        result.actions.iter().any(|a| matches!(a, DomainAction::StartAssemblies)),
+        "StartAssemblies must be in the execution feed; got: {:?}",
+        result.actions
+    );
 
-    // The ledger projection records the genuine domain intents but drops EnterMode.
+    // The ledger projection records genuine domain intents but drops StartAssemblies.
     let recorded = &result.transition_record.actions;
-    assert!(recorded.contains(&DomainAction::StartBuzzer));
-    assert!(recorded
-        .iter()
-        .all(|action| !matches!(action, DomainAction::EnterMode(_))));
+    assert!(
+        recorded.iter().all(|a| !matches!(a, DomainAction::StartAssemblies)),
+        "StartAssemblies must NOT appear in the ledger record; got: {:?}",
+        recorded
+    );
 
-    // Lossless otherwise: record == execution feed minus EnterMode.
+    // Lossless otherwise: record == execution feed minus StartAssemblies/StopAssemblies.
     let expected: Vec<DomainAction> = result
         .actions
         .iter()
-        .filter(|action| !matches!(action, DomainAction::EnterMode(_)))
+        .filter(|a| !matches!(a, DomainAction::StartAssemblies | DomainAction::StopAssemblies))
         .cloned()
         .collect();
     assert_eq!(recorded, &expected);
