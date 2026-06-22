@@ -8,10 +8,12 @@
 //! - `current_ctx` is the snapshot **after** zone_turn.
 //! - `modified_ctx` equals `current_ctx` on output (FSM does not mutate assemblies here).
 
-use crate::vehicle_state::VehicleContext;
-use super::machineries::{ActorModeHintFromDomain, DomainAction, FsmAction, FsmEvent, FsmState};
-use super::transition_map::{output, transition, TransitionNote};
+use std::collections::BTreeSet;
 use std::time::Instant;
+
+use crate::vehicle_state::VehicleContext;
+use super::machineries::{ActorModeHintFromDomain, DomainAction, FsmAction, FsmEvent, FsmState, ZoneId};
+use super::transition_map::{output, transition, TransitionNote};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawTransitionRecord {
@@ -38,10 +40,30 @@ pub fn step(
     event: &FsmEvent,
     now: Instant,
 ) -> StepResult {
-    let modified_ctx = current_ctx.clone();
+    let mut modified_ctx = current_ctx.clone();
 
     let transition_result = transition(current_state, event, &modified_ctx, now);
     let next_state = transition_result.next_state.clone();
+
+    // FSM-owned context mutations for `pending_assemblies`.
+    // These do NOT touch assembly state (headlamp, powertrain, etc.) — only the
+    // lifecycle bookkeeping field that the transition table uses for counting.
+    match event {
+        FsmEvent::PowerOn
+            if *current_state == FsmState::Off && next_state == FsmState::PreparingToStart =>
+        {
+            modified_ctx.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+        }
+        FsmEvent::PowerOff
+            if *current_state == FsmState::Idle && next_state == FsmState::PreparingToStop =>
+        {
+            modified_ctx.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+        }
+        FsmEvent::AssemblyZoneReady(zone_id) => {
+            modified_ctx.pending_assemblies.remove(zone_id);
+        }
+        _ => {}
+    }
     let mut actions: Vec<DomainAction> = output(current_state, &next_state, &modified_ctx)
         .into_iter()
         .filter_map(map_fsm_action)
@@ -69,6 +91,8 @@ pub fn step(
 
     // Ledger record: drop internal coordination signals (EnterMode, StartAssemblies,
     // StopAssemblies). These are control hints consumed by the actor, not domain intents.
+    // `AssemblyZoneReady` is also excluded — it is a zone-reply correlation signal,
+    // not a domain intent, and its effect is already captured by the resulting state change.
     let recorded_actions: Vec<DomainAction> = actions
         .iter()
         .filter(|action| !matches!(

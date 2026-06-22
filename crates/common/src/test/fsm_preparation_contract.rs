@@ -5,12 +5,22 @@
 //! These tests are written RED-first: every assertion references new symbols that do not
 //! yet exist in the production code. They must fail to compile until Phase 1 lands.
 
-use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, Operational};
-use crate::vehicle_state::VehicleContext;
+use std::collections::BTreeSet;
 use std::time::Instant;
+
+use crate::fsm::{step, transition, DomainAction, FsmEvent, FsmState, ZoneId};
+use crate::vehicle_state::VehicleContext;
 
 fn ctx() -> VehicleContext {
     VehicleContext::default()
+}
+
+/// A context that has `ZoneId::Headlamp` listed as a pending assembly — the state the
+/// FSM enters immediately after `Off → PreparingToStart` or `Idle → PreparingToStop`.
+fn ctx_with_headlamp_pending() -> VehicleContext {
+    let mut c = VehicleContext::default();
+    c.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+    c
 }
 
 // --- Transition table tests ---
@@ -23,10 +33,11 @@ fn test_power_on_transitions_to_preparing_to_start() {
 
 #[test]
 fn test_assemblies_ready_from_preparing_to_start_transitions_to_idle() {
+    // AssemblyZoneReady(Headlamp) with the last pending assembly → Idle.
     let result = transition(
         &FsmState::PreparingToStart,
-        &FsmEvent::Internal(Operational::AssembliesReady),
-        &ctx(),
+        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
+        &ctx_with_headlamp_pending(),
         Instant::now(),
     );
     assert_eq!(result.next_state, FsmState::Idle);
@@ -40,10 +51,11 @@ fn test_power_off_from_idle_transitions_to_preparing_to_stop() {
 
 #[test]
 fn test_assemblies_stopped_from_preparing_to_stop_transitions_to_off() {
+    // AssemblyZoneReady(Headlamp) with the last pending assembly → Off.
     let result = transition(
         &FsmState::PreparingToStop,
-        &FsmEvent::Internal(Operational::AssembliesStopped),
-        &ctx(),
+        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
+        &ctx_with_headlamp_pending(),
         Instant::now(),
     );
     assert_eq!(result.next_state, FsmState::Off);

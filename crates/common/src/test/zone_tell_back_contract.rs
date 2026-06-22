@@ -69,14 +69,16 @@ fn driving_ctx() -> crate::vehicle_state::VehicleContext {
 
 #[tokio::test]
 async fn given_silent_headlamp_when_headlamp_demux_event_then_ledger_records_unresponsive_warning() {
-    use crate::fsm::FsmEvent;
+    use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
+    use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
     use crate::test::ActorGuard;
     use crate::twin_runtime::constants::{ZONE_TELL_BACK_ATTEMPT_COUNT, ZONE_TELL_BACK_WAIT};
     use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
+    use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply};
     use crate::{PublishedDomainAction, PublishedFsmEvent, VehicleController};
     use tokio::sync::mpsc;
 
-    let (transition_tx, mut rx) = mpsc::channel(8);
+    let (transition_tx, mut rx) = mpsc::channel(16);
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
         test_silent_headlamp: true,
@@ -94,9 +96,28 @@ async fn given_silent_headlamp_when_headlamp_demux_event_then_ledger_records_unr
         handle,
     };
 
+    // Phase 5: headlamp is silent so the startup barrier never completes automatically.
+    // Manually inject the ZoneReady reply (turn 2) to allow the FSM to reach Idle.
     controller.send_power_on().await.expect("power on");
+    tokio::task::yield_now().await; // give the actor time to create the startup barrier
+    controller
+        .get_actor_ref()
+        .send_message(DigitalTwinCarVocabulary::ZoneReady {
+            zone_id: ZoneId::Headlamp,
+            turn_id: 2, // startup barrier is always turn 2 (PowerOn=1, StartAssemblies barrier=2)
+            tell_attempt: 0,
+            reply: ZoneReply::Headlamp(HeadlampZoneReply {
+                ctx: HeadlampContext { state: HeadlampState::Ready, ack_pending_since: None },
+                outcomes: vec![],
+            }),
+        })
+        .expect("inject startup zone ready");
+    crate::test::wait_fsm_state(&controller, FsmState::Idle, std::time::Duration::from_millis(500)).await;
+    // Drain the two startup ledger rows: PowerOn (seq 1) + AssemblyZoneReady (seq 2).
     let _ = rx.recv().await.expect("power on row");
+    let _ = rx.recv().await.expect("assembly zone ready row");
 
+    // Now the headlamp is still silent for operational tell-backs.
     controller
         .submit_fsm_event(FsmEvent::UpdateAmbientLux(500))
         .await

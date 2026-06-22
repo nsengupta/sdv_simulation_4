@@ -10,17 +10,20 @@ use std::time::{Duration, Instant};
 /// Operational mode transition table.
 ///
 /// Human table:
-/// - Off + PowerOn(healthy ctx) -> PreparingToStart
-/// - PreparingToStart + Internal(AssembliesReady) -> Idle
+/// - Off + PowerOn(healthy ctx) -> PreparingToStart  [initialises `ctx.pending_assemblies`]
+/// - PreparingToStart + AssemblyZoneReady(zone_id) -> Idle (last pending) / PreparingToStart (more pending)
 /// - PreparingToStart + anything else -> PreparingToStart (self-loop, no actions)
-/// - Idle + PowerOff -> PreparingToStop
+/// - Idle + PowerOff -> PreparingToStop  [initialises `ctx.pending_assemblies`]
 /// - Idle + UpdateRpm(rpm > [`RPM_DRIVING_THRESHOLD`]) -> Driving
 /// - Driving + derived ctx.powertrain.speed_kph == 0 -> Idle (any event, after kinematic refresh in `step`)
 /// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
 /// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
-/// - PreparingToStop + Internal(AssembliesStopped) -> Off
+/// - PreparingToStop + AssemblyZoneReady(zone_id) -> Off (last pending) / PreparingToStop (more pending)
 /// - PreparingToStop + anything else -> PreparingToStop (self-loop, no actions)
 /// - Everything else -> stay in current state
+///
+/// Note: `Internal(AssembliesReady)` / `Internal(AssembliesStopped)` remain in the vocabulary
+/// for observer/ledger use; they no longer appear on the primary startup/shutdown path.
 ///
 /// # Purity
 ///
@@ -58,8 +61,16 @@ pub fn transition(
             _ => TransitionResult { next_state: Off, note: None },
         },
         PreparingToStart => match event {
-            Internal(Operational::AssembliesReady) => {
-                TransitionResult { next_state: Idle, note: None }
+            AssemblyZoneReady(zone_id) => {
+                // `step` removes `zone_id` from `ctx.pending_assemblies` after this call.
+                // Peek at what the set will look like post-removal to decide the next state.
+                let remaining_after = current_ctx.pending_assemblies.len()
+                    - usize::from(current_ctx.pending_assemblies.contains(zone_id));
+                if remaining_after == 0 {
+                    TransitionResult { next_state: Idle, note: None }
+                } else {
+                    TransitionResult { next_state: PreparingToStart, note: None }
+                }
             }
             _ => TransitionResult { next_state: PreparingToStart, note: None },
         },
@@ -110,8 +121,14 @@ pub fn transition(
             _ => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: None },
         },
         PreparingToStop => match event {
-            Internal(Operational::AssembliesStopped) => {
-                TransitionResult { next_state: Off, note: None }
+            AssemblyZoneReady(zone_id) => {
+                let remaining_after = current_ctx.pending_assemblies.len()
+                    - usize::from(current_ctx.pending_assemblies.contains(zone_id));
+                if remaining_after == 0 {
+                    TransitionResult { next_state: Off, note: None }
+                } else {
+                    TransitionResult { next_state: PreparingToStop, note: None }
+                }
             }
             _ => TransitionResult { next_state: PreparingToStop, note: None },
         },

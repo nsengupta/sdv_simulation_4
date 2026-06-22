@@ -59,6 +59,9 @@ mod projection_contract;
 mod scenarios_smoke;
 
 #[cfg(test)]
+mod startup_barrier_contract;
+
+#[cfg(test)]
 mod turn_barrier_contract;
 
 /// A RAII (Resource Acquisition Is Initialization) guard for Ractor tests.
@@ -94,33 +97,33 @@ impl<T: ractor::Message> Drop for ActorGuard<T> {
 // reuse the existing public seams (`VehicleControllerRuntimeOptions`, `submit_physical_car_event`).
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::fsm::{FsmEvent, FsmState, Operational};
+use crate::fsm::{FsmEvent, FsmState};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_physics::LUX_ON_THRESHOLD;
 use crate::{ActuationCommand, PhysicalCarVocabulary, VehicleController};
 use tokio::sync::mpsc;
 
-/// Power on and advance past `PreparingToStart` to `Idle` by injecting
-/// `Internal(AssembliesReady)` — the Phase 1 shim for the coordination barrier that
-/// Phase 5 will wire automatically via the `StartAssemblies` action.
+/// Power on and wait for `Idle` via the `StartAssemblies` barrier.
+///
+/// `send_power_on` triggers `Off → PreparingToStart`, which emits `StartAssemblies`.
+/// The actor sends `BecomeOn` to the (non-silent) headlamp assembly; the headlamp replies
+/// `ZoneReady { state: Ready }` automatically; the startup barrier drains; the FSM
+/// commits `AssemblyZoneReady(Headlamp)` and transitions to `Idle`.
+/// No manual injection required.
 pub async fn power_on_to_idle(controller: &VehicleController) {
     controller.send_power_on().await.expect("power on");
-    controller
-        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
-        .await
-        .expect("assemblies ready");
     wait_fsm_state(controller, FsmState::Idle, std::time::Duration::from_millis(500)).await;
 }
 
-/// Power off and advance past `PreparingToStop` to `Off` by injecting
-/// `Internal(AssembliesStopped)` — the Phase 1 shim for the coordination barrier that
-/// Phase 5 will wire automatically via the `StopAssemblies` action.
+/// Power off and wait for `Off` via the `StopAssemblies` barrier.
+///
+/// `send_power_off` triggers `Idle → PreparingToStop`, which emits `StopAssemblies`.
+/// The actor sends `BecomeOff` to the (non-silent) headlamp assembly; the headlamp replies
+/// `ZoneReady { state: Off }` automatically; the shutdown barrier drains; the FSM
+/// commits `AssemblyZoneReady(Headlamp)` and transitions to `Off`.
+/// No manual injection required.
 pub async fn power_off_to_off(controller: &VehicleController) {
     controller.send_power_off().await.expect("power off");
-    controller
-        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesStopped))
-        .await
-        .expect("assemblies stopped");
     wait_fsm_state(controller, FsmState::Off, std::time::Duration::from_millis(500)).await;
 }
 

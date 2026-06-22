@@ -2,7 +2,7 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
-use crate::fsm::{FsmEvent, HeadlampState, Operational};
+use crate::fsm::{FsmEvent, HeadlampState};
 use crate::{PublishedFsmEvent, PublishedFsmState};
 use crate::test::{
     expect_actuation_command, inject_matching_ack, inject_matching_nack,
@@ -39,12 +39,13 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         handle,
     };
 
-    actor_ref
-        .send_message(FsmEvent::PowerOn.into())
-        .expect("Failed to send PowerOn stimulus");
-    actor_ref
-        .send_message(FsmEvent::Internal(Operational::AssembliesReady).into())
-        .expect("Failed to send AssembliesReady");
+    // Phase 5: drive Off → PreparingToStart → Idle via startup barrier, then read the two
+    // resulting ledger rows before queueing the remaining events.
+    power_on_to_idle(&controller).await;
+    let first = rx.recv().await.expect("Missing first transition record (PowerOn)");
+    let second = rx.recv().await.expect("Missing second transition record (AssemblyZoneReady)");
+
+    // Now queue lux + rpm events; actor is in Idle.
     actor_ref
         .send_message(FsmEvent::UpdateAmbientLux(crate::vehicle_physics::LUX_ON_THRESHOLD + 100).into())
         .expect("bright lux to prevent LightingUnsafe synthesis in Driving");
@@ -52,8 +53,6 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         .send_message(FsmEvent::UpdateRpm(1500).into())
         .expect("Failed to send UpdateRpm stimulus");
 
-    let first = rx.recv().await.expect("Missing first transition record");
-    let second = rx.recv().await.expect("Missing second transition record");
     let third = rx.recv().await.expect("Missing third transition record");
     let fourth = rx.recv().await.expect("Missing fourth transition record");
 
@@ -123,10 +122,9 @@ async fn scenario_log_warning_is_routed_to_diagnostic_sink() {
 
     // Drive Off → PreparingToStart → Idle → Driving → ExtremeOperationWarning (redline),
     // which emits the speed-threshold LogWarning intent.
-    // Phase 1: inject AssembliesReady to bridge through PreparingToStart.
+    // Phase 5: startup barrier drains automatically; wait for Idle before sending events.
+    power_on_to_idle(&controller).await;
     for evt in [
-        FsmEvent::PowerOn,
-        FsmEvent::Internal(Operational::AssembliesReady),
         FsmEvent::UpdateAmbientLux(crate::vehicle_physics::LUX_ON_THRESHOLD + 100),
         FsmEvent::UpdateRpm(2000),
         FsmEvent::UpdateRpm(7500),

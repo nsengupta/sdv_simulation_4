@@ -127,14 +127,23 @@ impl TurnBarrier {
         }
     }
 
-    /// Create a barrier for a turn that needs **no** zone tell-back.
+    /// Create a barrier for one assembly zone's lifecycle tell (`BecomeOn` / `BecomeOff`).
     ///
-    /// The `pending` set starts empty, so `is_complete()` returns `true` immediately
-    /// and the drain loop commits the turn without waiting for any zone reply.
-    /// Use this for pure brain-state transitions (e.g. `UpdateAmbientLux`) where
-    /// no zone message is emitted.
-    pub fn new_passthrough(turn_id: u64, event: FsmEvent, now: Instant) -> Self {
-        Self::new(turn_id, event, now)
+    /// Encapsulates the Phase 5 coupling: `zone_id` names both the pending slot and
+    /// the `AssemblyZoneReady(zone_id)` event committed when the barrier drains.
+    /// This keeps the two uses of `zone_id` in one place rather than duplicating them
+    /// at every call site (Q3 resolution).
+    pub fn new_for_assembly_zone(
+        turn_id: u64,
+        zone_id: ZoneId,
+        message: HeadlampMessage,
+        wait: TellBackWait,
+        timer: TellBackTimer,
+        now: Instant,
+    ) -> Self {
+        let mut barrier = Self::new(turn_id, FsmEvent::AssemblyZoneReady(zone_id), now);
+        barrier.add_pending_zone(zone_id, message, wait, timer);
+        barrier
     }
 
     // ── read-only header accessors ────────────────────────────────────────────
@@ -295,6 +304,96 @@ impl TurnBarrier {
             ingress: self.event,
             now: self.now,
             zone_replies,
+        }
+    }
+}
+
+// ── PassthroughBarrier ────────────────────────────────────────────────────────
+
+/// A barrier that carries no pending zone slots and is drainable immediately.
+///
+/// Distinct from [`TurnBarrier`] so that the type system prevents accidentally
+/// calling `add_pending_zone` on a passthrough turn — the method simply does not
+/// exist on this type.  Used for pure brain-state transitions (e.g. `PowerOn`,
+/// `UpdateRpm`) where no zone message is emitted.
+pub(crate) struct PassthroughBarrier {
+    turn_id: u64,
+    event: FsmEvent,
+    now: Instant,
+}
+
+impl PassthroughBarrier {
+    /// Create a passthrough barrier.  `is_complete()` is always `true`.
+    pub fn new(turn_id: u64, event: FsmEvent, now: Instant) -> Self {
+        Self { turn_id, event, now }
+    }
+
+    pub fn turn_id(&self) -> u64 { self.turn_id }
+
+    pub fn is_complete(&self) -> bool { true }
+
+    /// Consuming decomposition into a [`ResolvedTurn`] (no zone replies).
+    pub fn into_resolved_turn(self) -> ResolvedTurn {
+        ResolvedTurn {
+            ingress: self.event,
+            now: self.now,
+            zone_replies: ZoneReplies::default(),
+        }
+    }
+}
+
+// ── BarrierEntry ─────────────────────────────────────────────────────────────
+
+/// Either a zone-waiting [`TurnBarrier`] or an immediately-drainable [`PassthroughBarrier`].
+///
+/// The drain loop (`try_drain_barrier_queue`) holds a `VecDeque<BarrierEntry>` and commits
+/// from the front in arrival order.
+pub(crate) enum BarrierEntry {
+    Waiting(TurnBarrier),
+    Passthrough(PassthroughBarrier),
+}
+
+impl BarrierEntry {
+    pub fn turn_id(&self) -> u64 {
+        match self {
+            BarrierEntry::Waiting(b) => b.turn_id(),
+            BarrierEntry::Passthrough(b) => b.turn_id(),
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        match self {
+            BarrierEntry::Waiting(b) => b.is_complete(),
+            BarrierEntry::Passthrough(b) => b.is_complete(),
+        }
+    }
+
+    pub fn into_resolved_turn(self) -> ResolvedTurn {
+        match self {
+            BarrierEntry::Waiting(b) => b.into_resolved_turn(),
+            BarrierEntry::Passthrough(b) => b.into_resolved_turn(),
+        }
+    }
+
+    /// Delegate to the inner [`TurnBarrier`] for zone-reply correlation.
+    /// Returns `None` for passthrough entries (they have no pending zones).
+    pub fn as_waiting_mut(&mut self) -> Option<&mut TurnBarrier> {
+        match self {
+            BarrierEntry::Waiting(b) => Some(b),
+            BarrierEntry::Passthrough(_) => None,
+        }
+    }
+
+    pub fn as_waiting(&self) -> Option<&TurnBarrier> {
+        match self {
+            BarrierEntry::Waiting(b) => Some(b),
+            BarrierEntry::Passthrough(_) => None,
+        }
+    }
+
+    pub fn abort_all_timers(&mut self) {
+        if let BarrierEntry::Waiting(b) = self {
+            b.abort_all_timers();
         }
     }
 }

@@ -17,7 +17,11 @@ pub struct ZoneTurnResult {
     pub headlamp_before: HeadlampState,
 }
 
-pub(crate) fn fsm_event_headlamp_message(event: &FsmEvent) -> Option<HeadlampMessage> {
+/// Map a *user-originated* [`FsmEvent`] to the [`HeadlampMessage`] that must be told to
+/// the headlamp zone twinlet.  Returns `None` for events that do not require a zone tell
+/// (e.g. `PowerOn`, `TimerTick`) or for assembly lifecycle events (`AssemblyZoneReady`),
+/// which carry their reply embedded in the barrier rather than triggering a new tell.
+pub(crate) fn user_event_to_headlamp_tell(event: &FsmEvent) -> Option<HeadlampMessage> {
     match event {
         FsmEvent::UpdateAmbientLux(lux) => Some(HeadlampMessage::AmbientLux(*lux)),
         FsmEvent::FrontHeadlampOnAck => Some(HeadlampMessage::AckOn),
@@ -32,7 +36,8 @@ pub(crate) fn fsm_event_headlamp_message(event: &FsmEvent) -> Option<HeadlampMes
         | FsmEvent::PowerOn
         | FsmEvent::PowerOff
         | FsmEvent::TimerTick
-        | FsmEvent::Internal(_) => None,
+        | FsmEvent::Internal(_)
+        | FsmEvent::AssemblyZoneReady(_) => None,
     }
 }
 
@@ -110,6 +115,17 @@ pub fn zone_turn(
             headlamp_outcomes.extend(zone_reply.outcomes);
         }
         FsmEvent::PowerOn | FsmEvent::PowerOff | FsmEvent::Internal(_) => {}
+        FsmEvent::AssemblyZoneReady(zone_id) => {
+            // Apply the zone reply that was embedded in the assembly barrier.
+            match zone_id {
+                crate::fsm::ZoneId::Headlamp => {
+                    if let Some(reply) = zone_replies.headlamp.ingress.as_ref() {
+                        next.headlamp = reply.ctx.clone();
+                        headlamp_outcomes.extend(reply.outcomes.clone());
+                    }
+                }
+            }
+        }
     }
 
     ZoneTurnResult {

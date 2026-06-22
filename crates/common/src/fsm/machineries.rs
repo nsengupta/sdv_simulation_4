@@ -11,8 +11,8 @@ pub use crate::vehicle_state::{FrontHeadlampIncompleteCause, FrontHeadlampSwitch
 #[derive(Debug, Clone, PartialEq)]
 pub enum FsmState {
     Off,
-    /// Assemblies are being started; waiting for `Internal(AssembliesReady)` before
-    /// transitioning to `Idle`. No zone tells for external events in this state.
+    /// Assemblies are being started; waiting for `AssemblyZoneReady` events to drain
+    /// `ctx.pending_assemblies` before transitioning to `Idle`.
     PreparingToStart,
     Idle,
     Driving,
@@ -20,8 +20,8 @@ pub enum FsmState {
     DrivingDangerously,
     /// Speed > 160 km/h and RPM > 5500 sustained (see [`crate::vehicle_physics`]).
     ExtremeOperationWarning(Instant),
-    /// Assemblies are being stopped; waiting for `Internal(AssembliesStopped)` before
-    /// transitioning to `Off`. No zone tells for external events in this state.
+    /// Assemblies are being stopped; waiting for `AssemblyZoneReady` events to drain
+    /// `ctx.pending_assemblies` before transitioning to `Off`.
     PreparingToStop,
 }
 
@@ -59,6 +59,13 @@ pub enum FsmEvent {
     TimerTick,
     /// Brain-only hop (ADR-7): no `zone_turn`; table sets mode.
     Internal(Operational),
+    /// An assembly zone has acknowledged a `BecomeOn` or `BecomeOff` tell.
+    ///
+    /// This is an *external* event — it arrives from an assembly actor mailbox via
+    /// a drained [`crate::twin_runtime::turn_barrier::TurnBarrier`], exactly like
+    /// `FrontHeadlampOnAck`.  The FSM transition table counts down
+    /// `ctx.pending_assemblies` and transitions when the set becomes empty.
+    AssemblyZoneReady(ZoneId),
 }
 
 #[derive(Debug, Clone, PartialEq)]

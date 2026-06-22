@@ -121,8 +121,9 @@ impl ActuationManager for DefaultActuationManager {
                 }
             }
             DomainAction::EnterMode(_) => {}
-            // Phase 1 stub: StartAssemblies/StopAssemblies will be wired in Phase 5.
-            // They fall through here as no-ops until the actor handles them explicitly.
+            // StartAssemblies / StopAssemblies are intercepted by `apply_committed_quiescence`
+            // in `virtual_car_actor.rs` before they reach the actuation manager, so this arm
+            // is unreachable in production.  It remains for `DomainAction` match exhaustiveness.
             DomainAction::StartAssemblies | DomainAction::StopAssemblies => {}
         }
 

@@ -30,9 +30,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
-use crate::fsm::{FsmEvent, HeadlampState, ZoneId};
+use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
 use crate::published::{PublishedDomainAction, PublishedTransitionRecord};
-use crate::test::{power_on_to_idle, ActorGuard};
+use crate::test::ActorGuard;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_physics::LUX_ON_THRESHOLD;
 use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply};
@@ -105,6 +105,11 @@ fn inject_timeout(controller: &VehicleController, turn_id: u64, attempt: u32) {
 }
 
 /// Spawn a silent-headlamp controller with a fresh transition channel.
+///
+/// `initial_headlamp_ctx` is intentionally omitted: Phase 5 sets the headlamp
+/// to `Ready` automatically when `boot_silent` injects the `BecomeOn` zone reply
+/// for the startup barrier (turn 2).  Removing the override ensures that the actor
+/// exercises the real `BecomeOn` path during boot.
 async fn spawn_silent(
     identity: &str,
 ) -> (
@@ -115,10 +120,6 @@ async fn spawn_silent(
     let (tx, rx) = mpsc::channel(32);
     let opts = VehicleControllerRuntimeOptions {
         transition_tx: Some(tx),
-        initial_headlamp_ctx: Some(HeadlampContext {
-            state: HeadlampState::Ready,
-            ack_pending_since: None,
-        }),
         test_silent_headlamp: true, // suppress real headlamp replies; we inject manually
         ..Default::default()
     };
@@ -133,9 +134,31 @@ async fn spawn_silent(
     (controller, rx, guard)
 }
 
-/// After `power_on_to_idle`, `next_turn_id` is 3:
-///   PowerOn → turn 1 (no zone tell),  AssembliesReady → turn 2 (no zone tell).
+/// Turn ID allocated for the startup barrier created by `StartAssemblies`.
+///   PowerOn → turn 1 (passthrough), StartAssemblies handler → turn 2 (assembly barrier).
+const STARTUP_BARRIER_TURN: u64 = 2;
+
+/// First turn ID available to user-driven events after `boot_silent`.
+///   PowerOn = 1, startup barrier = 2, first user event = 3.
 const FIRST_USER_TURN: u64 = 3;
+
+/// Boot sequence for a silent-headlamp actor.
+///
+/// Sends `PowerOn` (turn 1 passthrough), manually injects the `BecomeOn` `ZoneReady` reply
+/// that the silent headlamp will not send (turn 2 startup barrier), then waits for the FSM
+/// to reach `Idle` and drains the two resulting ledger rows.
+async fn boot_silent(
+    controller: &VehicleController,
+    rx: &mut mpsc::Receiver<PublishedTransitionRecord>,
+) {
+    controller.send_power_on().await.expect("power on");
+    // Give the actor a moment to process PowerOn and create the startup barrier.
+    tokio::task::yield_now().await;
+    inject_zone_ready(controller, STARTUP_BARRIER_TURN, HeadlampState::Ready);
+    crate::test::wait_fsm_state(controller, FsmState::Idle, std::time::Duration::from_millis(500)).await;
+    // Drain the two ledger rows: PowerOn hop + AssemblyZoneReady(Headlamp) hop.
+    drain_n(rx, 2, std::time::Duration::from_secs(3)).await;
+}
 
 // ── Test 1 ──────────────────────────────────────────────────────────────────
 
@@ -153,8 +176,7 @@ const FIRST_USER_TURN: u64 = 3;
 async fn two_zone_directed_events_commit_in_arrival_order() {
     let (controller, mut rx, _guard) = spawn_silent("ROB-ORDER-1").await;
 
-    power_on_to_idle(&controller).await;
-    drain_n(&mut rx, 2, Duration::from_secs(3)).await; // PowerOn + AssembliesReady rows
+    boot_silent(&controller, &mut rx).await;
 
     // Turn 3: zone-directed (headlamp zone tell needed).
     controller
@@ -207,8 +229,7 @@ async fn three_events_drain_in_arrival_order_when_zone_replies_arrive_out_of_ord
 
     let (controller, mut rx, _guard) = spawn_silent("ROB-ORDER-2").await;
 
-    power_on_to_idle(&controller).await;
-    drain_n(&mut rx, 2, Duration::from_secs(3)).await;
+    boot_silent(&controller, &mut rx).await;
 
     controller
         .submit_fsm_event(FsmEvent::UpdateAmbientLux(20))
@@ -259,8 +280,7 @@ async fn exhausted_front_barrier_unblocks_rear_with_stored_reply() {
 
     let (controller, mut rx, _guard) = spawn_silent("ROB-TIMEOUT-1").await;
 
-    power_on_to_idle(&controller).await;
-    drain_n(&mut rx, 2, Duration::from_secs(3)).await;
+    boot_silent(&controller, &mut rx).await;
 
     controller
         .submit_fsm_event(FsmEvent::UpdateAmbientLux(20))
@@ -311,8 +331,7 @@ async fn exhausted_front_barrier_unblocks_rear_with_stored_reply() {
 async fn second_zone_reply_before_first_does_not_drain_anything_prematurely() {
     let (controller, mut rx, _guard) = spawn_silent("ROB-DRAIN-1").await;
 
-    power_on_to_idle(&controller).await;
-    drain_n(&mut rx, 2, Duration::from_secs(3)).await;
+    boot_silent(&controller, &mut rx).await;
 
     controller
         .submit_fsm_event(FsmEvent::UpdateAmbientLux(20))

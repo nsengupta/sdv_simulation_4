@@ -6,9 +6,9 @@
 use std::time::Instant;
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
-use crate::fsm::{FsmEvent, HeadlampState, Operational};
+use crate::fsm::HeadlampState;
 use crate::published::{PublishedHeadlampContext, PublishedHeadlampState};
-use crate::test::{expect_actuation_command, inject_matching_ack, ActorGuard};
+use crate::test::{expect_actuation_command, inject_matching_ack, power_on_to_idle, ActorGuard};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_state::{HeadlampContext, HeadlampMessage};
 use crate::{PhysicalCarVocabulary, PublishedFsmEvent, VehicleController, VssSignal};
@@ -44,15 +44,11 @@ fn expected_headlamp_after_on_ack_journey(now: Instant) -> HeadlampContext {
 async fn given_low_lux_and_on_ack_when_get_status_then_ledger_headlamp_matches_embed() {
     let (transition_tx, mut rx) = mpsc::channel(16);
     let (actuation_tx, mut actuation_rx) = mpsc::channel(16);
+    // Phase 5: headlamp reaches Ready automatically via the startup BecomeOn barrier;
+    // `initial_headlamp_ctx` is no longer needed.
     let runtime_options = VehicleControllerRuntimeOptions {
         transition_tx: Some(transition_tx),
         actuation_command_tx: Some(actuation_tx),
-        // Phase 2: headlamp starts in Ready (assembly active, lamp dark).
-        // Phase 5 will drive this transition automatically via StartAssemblies + BecomeOn.
-        initial_headlamp_ctx: Some(HeadlampContext {
-            state: HeadlampState::Ready,
-            ack_pending_since: None,
-        }),
         ..VehicleControllerRuntimeOptions::default()
     };
 
@@ -67,14 +63,11 @@ async fn given_low_lux_and_on_ack_when_get_status_then_ledger_headlamp_matches_e
         handle,
     };
 
-    // Phase 1: PowerOn → PreparingToStart; inject AssembliesReady to advance to Idle.
-    controller.send_power_on().await.expect("power on");
+    // Phase 5: startup barrier drains automatically → Idle.  Drain two ledger rows:
+    // PowerOn (seq 1) and AssemblyZoneReady(Headlamp) (seq 2).
+    power_on_to_idle(&controller).await;
     let _power_on_record = rx.recv().await.expect("ledger row for power on");
-    controller
-        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
-        .await
-        .expect("assemblies ready");
-    let _assemblies_ready_record = rx.recv().await.expect("ledger row for assemblies ready");
+    let _assemblies_ready_record = rx.recv().await.expect("ledger row for assembly zone ready");
 
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
@@ -149,10 +142,12 @@ async fn given_power_on_only_when_get_status_then_ledger_headlamp_matches_embed(
         handle,
     };
 
-    controller.send_power_on().await.expect("power on");
-
-    let record = rx.recv().await.expect("ledger row for power on");
-    assert_eq!(record.event, PublishedFsmEvent::PowerOn);
+    // Phase 5: startup barrier fires automatically when headlamp replies ZoneReady.
+    // Drain two ledger rows: PowerOn (seq 1) + AssemblyZoneReady (seq 2).
+    power_on_to_idle(&controller).await;
+    let _power_on_record = rx.recv().await.expect("ledger row for power on");
+    let assembly_ready_record = rx.recv().await.expect("ledger row for assembly zone ready");
+    assert_eq!(_power_on_record.event, PublishedFsmEvent::PowerOn);
 
     let snapshot = actor_ref
         .call(
@@ -163,8 +158,10 @@ async fn given_power_on_only_when_get_status_then_ledger_headlamp_matches_embed(
         .expect("GetStatus call")
         .expect("GetStatus reply");
 
+    // The latest ledger record (AssemblyZoneReady) carries the post-startup headlamp
+    // context, which should match the persisted snapshot after reaching Idle.
     assert_published_headlamp_matches_runtime(
-        &record.current_ctx.headlamp,
+        &assembly_ready_record.current_ctx.headlamp,
         &snapshot.context().headlamp,
     );
 }

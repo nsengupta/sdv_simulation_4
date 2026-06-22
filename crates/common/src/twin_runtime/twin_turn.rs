@@ -123,6 +123,11 @@ pub fn run_to_quiescence(
 }
 
 /// Whether this event **enters** [`FsmState::Off`] from a powered state after zone demux.
+///
+/// Returns `false` unconditionally for [`FsmEvent::AssemblyZoneReady`]: the headlamp zone
+/// reply was already embedded in the assembly barrier (`BecomeOff` → `HeadlampState::Off`),
+/// so no additional ignition-off reset tell is needed.  This keeps the `IgnitionOffReset`
+/// barrier phase unreachable after Phase 5.
 pub(crate) fn fsm_step_lands_off(
     current_state: &FsmState,
     current_ctx: &VehicleContext,
@@ -131,6 +136,11 @@ pub(crate) fn fsm_step_lands_off(
     zone_replies: &ZoneReplies,
 ) -> bool {
     if *current_state == FsmState::Off {
+        return false;
+    }
+    // Assembly zone replies carry an embedded BecomeOff that already resets the headlamp;
+    // no ignition-off reset tell is required.
+    if matches!(event, FsmEvent::AssemblyZoneReady(_)) {
         return false;
     }
     if matches!(event, FsmEvent::Internal(_)) {

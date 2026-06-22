@@ -2,8 +2,8 @@
 
 use crate::digital_twin::DigitalTwinCarVocabulary;
 use crate::twin_runtime::controller::virtual_car_actor::VirtualCarActor;
-use crate::fsm::{FsmEvent, FsmState, Operational};
-use crate::test::{power_off_to_off, power_on_to_idle, ActorGuard};
+use crate::fsm::{FsmEvent, FsmState};
+use crate::test::{power_off_to_off, power_on_to_idle, wait_fsm_state, ActorGuard};
 use crate::{PhysicalCarVocabulary, VehicleController};
 use ractor::Actor;
 use std::time::Duration;
@@ -47,10 +47,9 @@ async fn given_controller_when_get_snapshot_called_then_returns_readonly_snapsho
     };
     let controller = VehicleController::new(actor.clone());
 
-    controller
-        .submit_fsm_event(FsmEvent::PowerOn)
-        .await
-        .expect("power on should enqueue");
+    // Phase 5: wait for the startup barrier to drain so both snapshot calls
+    // see a stable Idle state and agree.
+    power_on_to_idle(&controller).await;
 
     let direct = actor
         .call(
@@ -87,7 +86,8 @@ async fn given_applied_events_when_get_snapshot_then_as_of_seq_counts_every_even
         .expect("snapshot");
     assert_eq!(fresh.as_of_seq(), 0);
 
-    // Phase 1: PowerOn → PreparingToStart (seq 1).
+    // Phase 5: PowerOn → PreparingToStart (seq 1). GetStatus is enqueued before the
+    // headlamp ZoneReady reply arrives, so the snapshot deterministically sees seq 1.
     controller
         .submit_fsm_event(FsmEvent::PowerOn)
         .await
@@ -98,16 +98,14 @@ async fn given_applied_events_when_get_snapshot_then_as_of_seq_counts_every_even
         .expect("snapshot");
     assert_eq!(after_power_on.as_of_seq(), 1, "PowerOn → PreparingToStart is seq 1");
 
-    // Phase 1: AssembliesReady → Idle (seq 2).
-    controller
-        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
-        .await
-        .expect("assemblies ready should enqueue");
+    // Phase 5: startup barrier drains automatically when headlamp replies ZoneReady.
+    // AssemblyZoneReady(Headlamp) → Idle is seq 2.
+    wait_fsm_state(&controller, FsmState::Idle, Duration::from_millis(500)).await;
     let after_idle = controller
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(after_idle.as_of_seq(), 2, "AssembliesReady → Idle is seq 2");
+    assert_eq!(after_idle.as_of_seq(), 2, "AssemblyZoneReady → Idle is seq 2");
 
     // RPM in dark (default lux=0): zone hop (seq 3) + LightingUnsafe internal hop (seq 4).
     controller

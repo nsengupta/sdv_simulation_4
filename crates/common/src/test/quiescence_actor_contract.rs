@@ -115,12 +115,9 @@ async fn given_actor_idle_when_power_on_then_single_ledger_row_and_idle_state() 
     assert_eq!(record_start.event, PublishedFsmEvent::PowerOn);
     assert_eq!(record_start.next_state, PublishedFsmState::PreparingToStart);
 
-    controller
-        .submit_fsm_event(FsmEvent::Internal(Operational::AssembliesReady))
-        .await
-        .expect("assemblies ready");
-
-    let record_idle = rx.recv().await.expect("assemblies ready → idle ledger row");
+    // Phase 5: startup barrier fires automatically when headlamp replies ZoneReady.
+    // The second ledger row is AssemblyZoneReady(Headlamp) → Idle.
+    let record_idle = rx.recv().await.expect("assembly zone ready → idle ledger row");
     assert_eq!(record_idle.record_seq, 2);
     assert_eq!(record_idle.next_state, PublishedFsmState::Idle);
 

@@ -164,6 +164,10 @@ impl From<&FsmEvent> for PublishedFsmEvent {
             }
             FsmEvent::TimerTick => Self::TimerTick,
             FsmEvent::Internal(op) => Self::Internal(op.into()),
+            // AssemblyZoneReady is an internal coordination signal (zone reply correlation).
+            // It has no published representation; map to TimerTick as a neutral placeholder.
+            // The FSM state change it causes is captured by the resulting state in the ledger.
+            FsmEvent::AssemblyZoneReady(_) => Self::TimerTick,
         }
     }
 }

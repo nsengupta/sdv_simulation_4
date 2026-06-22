@@ -1,6 +1,7 @@
 //! Unit tests for the FSM spec (`transition` / `output`).
 
-use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, Operational};
+use std::collections::BTreeSet;
+use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, ZoneId};
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{
     extreme_operation_active, EXTREME_OPERATION_WARNING_MESSAGE, RPM_EXTREME_OPERATION_THRESHOLD,
@@ -82,11 +83,13 @@ fn test_transition_standard_commute_flow() {
     let mut state = transition(&FsmState::Off, &FsmEvent::PowerOn, &ctx, now);
     assert_eq!(state.next_state, FsmState::PreparingToStart);
 
-    // PreparingToStart + AssembliesReady → Idle
+    // PreparingToStart + AssemblyZoneReady(Headlamp) [last pending] → Idle
+    let mut ctx_with_pending = ctx.clone();
+    ctx_with_pending.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
     state = transition(
         &state.next_state,
-        &FsmEvent::Internal(Operational::AssembliesReady),
-        &ctx,
+        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
+        &ctx_with_pending,
         now,
     );
     assert_eq!(state.next_state, FsmState::Idle);
@@ -107,11 +110,13 @@ fn test_transition_standard_commute_flow() {
     state = transition(&state.next_state, &FsmEvent::PowerOff, &stopped_ctx, now);
     assert_eq!(state.next_state, FsmState::PreparingToStop);
 
-    // PreparingToStop + AssembliesStopped → Off
+    // PreparingToStop + AssemblyZoneReady(Headlamp) [last pending] → Off
+    let mut stopped_ctx_with_pending = stopped_ctx.clone();
+    stopped_ctx_with_pending.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
     state = transition(
         &state.next_state,
-        &FsmEvent::Internal(Operational::AssembliesStopped),
-        &stopped_ctx,
+        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
+        &stopped_ctx_with_pending,
         now,
     );
     assert_eq!(state.next_state, FsmState::Off);
