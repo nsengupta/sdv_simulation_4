@@ -12,6 +12,7 @@ pub mod front_headlamp;
 pub mod health;
 pub mod powertrain;
 pub mod visibility;
+pub mod wiper;
 
 use std::collections::BTreeSet;
 
@@ -25,6 +26,7 @@ pub use powertrain::{
     WheelRpm,
 };
 pub use visibility::{VisibilityContext, VisibilityMessage, VisibilityOutcome, VisibilityState};
+pub use wiper::{WiperContext, WiperMessage, WiperOutcome, WiperState, WiperZoneReply};
 
 /// Aggregate of all vehicle assemblies held by the digital twin.
 ///
@@ -44,6 +46,7 @@ pub struct VehicleContext {
     pub health: VehicleHealthContext,
     pub visibility: VisibilityContext,
     pub headlamp: HeadlampContext,
+    pub wiper: WiperContext,
     pub pending_assemblies: BTreeSet<crate::fsm::machineries::ZoneId>,
 }
 

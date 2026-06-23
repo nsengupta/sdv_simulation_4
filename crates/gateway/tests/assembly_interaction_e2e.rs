@@ -1,19 +1,19 @@
-//! Controller/FSM integration tests for front-headlamp command outcomes.
+//! Controller/FSM integration tests for assembly interaction outcomes.
 //!
 //! Scope:
 //! - Uses `VehicleController` at projection boundary.
 //! - Drives `PhysicalCarVocabulary` events directly.
-//! - Verifies persisted context for ACK / NACK / timeout outcomes.
+//! - Verifies persisted context across all managed assemblies (headlamp, wiper, …).
 //!
 //! Non-scope:
 //! - SocketCAN bus transport wiring (`vcan0`) and separate actuator process orchestration.
-//!   Those are covered by runtime/manual smoke scenarios and bus-level tests.
+//!   Those are covered by runtime/manual smoke scenarios and assembly-specific CAN tests.
 
 use std::time::Duration;
 
 use common::facade::{
     FRONT_HEADLAMP_ON_ACK_WAIT, HeadlampState, PhysicalCarVocabulary, VehicleController,
-    VehicleControllerRuntimeOptions, VssSignal,
+    VehicleControllerRuntimeOptions, VssSignal, WiperState,
 };
 
 async fn wait_headlamp_state(
@@ -35,8 +35,27 @@ async fn wait_headlamp_state(
     }
 }
 
+async fn wait_wiper_state(
+    controller: &VehicleController,
+    expected: WiperState,
+    timeout: Duration,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(snapshot) = controller.get_snapshot(Some(Duration::from_millis(50))).await {
+            if snapshot.context().wiper.state == expected {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out after {timeout:?} waiting for wiper {expected:?}");
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
-async fn controller_fsm_front_headlamp_ack_path() {
+async fn headlamp_ack_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
         "E2E-FRONT-HEADLAMP-ACK-01".to_string(),
@@ -46,9 +65,9 @@ async fn controller_fsm_front_headlamp_ack_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
-    // Phase 6: wait for startup barrier to drain (BecomeOn → Ready) before sending user events.
-    // AmbientLux during PreparingToStart is a PassthroughBarrier (zone_message_for_event = None).
+    // Both twinlets must complete startup lifecycle before sending user events.
     wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
+    wait_wiper_state(&controller, WiperState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -72,7 +91,7 @@ async fn controller_fsm_front_headlamp_ack_path() {
 }
 
 #[tokio::test]
-async fn controller_fsm_front_headlamp_nack_path() {
+async fn headlamp_nack_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
         "E2E-FRONT-HEADLAMP-NACK-01".to_string(),
@@ -82,8 +101,9 @@ async fn controller_fsm_front_headlamp_nack_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
-    // Phase 6: wait for startup barrier to drain before sending user events.
+    // Both twinlets must complete startup lifecycle before sending user events.
     wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
+    wait_wiper_state(&controller, WiperState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,
@@ -108,7 +128,7 @@ async fn controller_fsm_front_headlamp_nack_path() {
 }
 
 #[tokio::test]
-async fn controller_fsm_front_headlamp_no_response_timeout_path() {
+async fn headlamp_no_response_timeout_path() {
     let runtime_options = VehicleControllerRuntimeOptions::default();
     let (controller, _join) = VehicleController::install_and_start_with_options(
         "E2E-FRONT-HEADLAMP-TIMEOUT-01".to_string(),
@@ -118,10 +138,11 @@ async fn controller_fsm_front_headlamp_no_response_timeout_path() {
     .expect("controller start");
 
     controller.send_power_on().await.expect("power on");
-    // Phase 6: wait for startup barrier to drain (headlamp → Ready, FSM → Idle) before
-    // sending the lux event.  AmbientLux during PreparingToStart is a PassthroughBarrier;
-    // the headlamp would never reach OnRequested and the ACK timer would never fire.
+    // Both twinlets must complete startup lifecycle (FSM → Idle) before sending user events.
+    // AmbientLux during PreparingToStart is a PassthroughBarrier; the headlamp would never
+    // reach OnRequested and the ACK timer would never fire.
     wait_headlamp_state(&controller, HeadlampState::Ready, Duration::from_millis(500)).await;
+    wait_wiper_state(&controller, WiperState::Ready, Duration::from_millis(500)).await;
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
             20,

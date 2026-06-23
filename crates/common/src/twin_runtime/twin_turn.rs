@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::fsm::{step, DomainAction, FsmEvent, FsmState, StepResult};
 use crate::twin_runtime::detectors::detect_internal_after_hop;
-use crate::twin_runtime::outcome_map::headlamp_outcomes_to_domain_actions;
+use crate::twin_runtime::outcome_map::zone_outcomes_to_domain_actions;
 use crate::twin_runtime::zone_replies::ZoneReplies;
 use crate::twin_runtime::zone_turn::zone_turn;
 use crate::vehicle_state::VehicleContext;
@@ -153,10 +153,13 @@ fn apply_external_hop(
     now: Instant,
     zone_replies: &ZoneReplies,
 ) -> StepResult {
+    // Capture headlamp_before at the call site (D4: ZoneTurnResult no longer carries it).
+    let _headlamp_before = current_ctx.headlamp.state;
+
     let zone = zone_turn(current_ctx, event, current_state, now, zone_replies);
     let mut result = step(current_state, &zone.ctx, event, now);
 
-    let zone_actions = headlamp_outcomes_to_domain_actions(zone.headlamp_outcomes);
+    let zone_actions = zone_outcomes_to_domain_actions(zone.outcomes);
     result.actions = zone_actions
         .into_iter()
         .chain(result.actions)

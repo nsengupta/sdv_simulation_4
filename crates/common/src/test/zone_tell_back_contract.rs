@@ -46,7 +46,10 @@ fn synthetic_unresponsive_embed_surfaces_log_warning_on_commit() {
         ResolvedTurn {
             ingress: FsmEvent::TimerTick,
             now: t0,
-            zone_replies: ZoneReplies::with_headlamp_ingress(synthetic),
+            zone_replies: ZoneReplies::with_reply(
+                crate::fsm::ZoneId::Headlamp,
+                crate::digital_twin::ZoneReply::Headlamp(synthetic),
+            ),
         },
     );
     assert!(
@@ -113,9 +116,12 @@ async fn given_silent_headlamp_when_headlamp_demux_event_then_ledger_records_unr
         })
         .expect("inject startup zone ready");
     crate::test::wait_fsm_state(&controller, FsmState::Idle, std::time::Duration::from_millis(500)).await;
-    // Drain the two startup ledger rows: PowerOn (seq 1) + AssemblyZoneReady (seq 2).
+    // Phase 7: drain THREE startup ledger rows:
+    //   PowerOn + AssemblyZoneReady(Headlamp) + AssemblyZoneReady(Wiper).
+    // Wiper is non-silent (default) so it auto-replies to its BecomeOn barrier (turn 3).
     let _ = rx.recv().await.expect("power on row");
-    let _ = rx.recv().await.expect("assembly zone ready row");
+    let _ = rx.recv().await.expect("headlamp assembly zone ready row");
+    let _ = rx.recv().await.expect("wiper assembly zone ready row");
 
     // Now the headlamp is still silent for operational tell-backs.
     controller

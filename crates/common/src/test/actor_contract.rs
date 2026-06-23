@@ -38,11 +38,13 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         handle,
     };
 
-    // Phase 5: drive Off → PreparingToStart → Idle via startup barrier, then read the two
-    // resulting ledger rows before queueing the remaining events.
+    // Phase 7: Off → PreparingToStart → {AssemblyZoneReady(Headlamp)} →
+    //           {AssemblyZoneReady(Wiper)} → Idle produces THREE ledger rows.
+    // Drain all three before queuing user events.
     power_on_to_idle(&controller).await;
-    let first = rx.recv().await.expect("Missing first transition record (PowerOn)");
-    let second = rx.recv().await.expect("Missing second transition record (AssemblyZoneReady)");
+    let row1 = rx.recv().await.expect("Missing row 1 (PowerOn)");
+    let row2 = rx.recv().await.expect("Missing row 2 (AssemblyZoneReady Headlamp)");
+    let row3 = rx.recv().await.expect("Missing row 3 (AssemblyZoneReady Wiper → Idle)");
 
     // Now queue lux + rpm events; actor is in Idle.
     actor_ref
@@ -52,30 +54,35 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
         .send_message(FsmEvent::UpdateRpm(1500).into())
         .expect("Failed to send UpdateRpm stimulus");
 
-    let third = rx.recv().await.expect("Missing third transition record");
-    let fourth = rx.recv().await.expect("Missing fourth transition record");
+    let row4 = rx.recv().await.expect("Missing row 4 (lux)");
+    let row5 = rx.recv().await.expect("Missing row 5 (rpm)");
 
-    assert_eq!(first.record_seq, 1);
-    assert_eq!(first.event, PublishedFsmEvent::PowerOn);
-    assert_eq!(first.old_state, PublishedFsmState::Off);
-    assert_eq!(first.next_state, PublishedFsmState::PreparingToStart);
+    assert_eq!(row1.record_seq, 1);
+    assert_eq!(row1.event, PublishedFsmEvent::PowerOn);
+    assert_eq!(row1.old_state, PublishedFsmState::Off);
+    assert_eq!(row1.next_state, PublishedFsmState::PreparingToStart);
 
-    assert_eq!(second.record_seq, 2);
-    assert_eq!(second.next_state, PublishedFsmState::Idle);
+    // Row 2: AssemblyZoneReady(Headlamp) — stays in PreparingToStart (Wiper still pending).
+    assert_eq!(row2.record_seq, 2);
+    assert_eq!(row2.next_state, PublishedFsmState::PreparingToStart);
 
-    // Lux row (seq 3) keeps the FSM in Idle (no state change from bright lux).
-    assert_eq!(third.record_seq, 3);
+    // Row 3: AssemblyZoneReady(Wiper) — both assemblies ready; transitions to Idle.
+    assert_eq!(row3.record_seq, 3);
+    assert_eq!(row3.next_state, PublishedFsmState::Idle);
 
-    // RPM row advances to Driving (seq 4).
-    assert_eq!(fourth.record_seq, 4);
-    assert_eq!(fourth.event, PublishedFsmEvent::UpdateRpm(1500));
-    assert_eq!(fourth.old_state, PublishedFsmState::Idle);
-    assert_eq!(fourth.next_state, PublishedFsmState::Driving);
-    assert_eq!(fourth.current_ctx.powertrain.wheel_rpm.front_left, 1500);
+    // Lux row (seq 4) keeps the FSM in Idle (no state change from bright lux).
+    assert_eq!(row4.record_seq, 4);
+
+    // RPM row (seq 5) advances to Driving.
+    assert_eq!(row5.record_seq, 5);
+    assert_eq!(row5.event, PublishedFsmEvent::UpdateRpm(1500));
+    assert_eq!(row5.old_state, PublishedFsmState::Idle);
+    assert_eq!(row5.next_state, PublishedFsmState::Driving);
+    assert_eq!(row5.current_ctx.powertrain.wheel_rpm.front_left, 1500);
 
     // All records share one run (session epoch) and advance monotonically in wall time.
-    assert_eq!(first.session_epoch_unix_nanos, fourth.session_epoch_unix_nanos);
-    assert!(fourth.at_unix >= first.at_unix);
+    assert_eq!(row1.session_epoch_unix_nanos, row5.session_epoch_unix_nanos);
+    assert!(row5.at_unix >= row1.at_unix);
 
     let twin_snapshot = actor_ref
         .call(
@@ -88,12 +95,12 @@ async fn scenario_raw_transition_records_are_emitted_in_order() {
 
     let ctx = twin_snapshot.context();
     assert_eq!(
-        fourth.current_ctx.powertrain.wheel_rpm.front_left,
+        row5.current_ctx.powertrain.wheel_rpm.front_left,
         ctx.powertrain.wheel_rpm.front_left,
         "emitted current_ctx must match persisted actor context after transition"
     );
-    assert_eq!(fourth.current_ctx.powertrain.speed_kph, ctx.powertrain.speed_kph);
-    assert_eq!(fourth.current_ctx.visibility.ambient_lux, ctx.visibility.ambient_lux);
+    assert_eq!(row5.current_ctx.powertrain.speed_kph, ctx.powertrain.speed_kph);
+    assert_eq!(row5.current_ctx.visibility.ambient_lux, ctx.visibility.ambient_lux);
 }
 
 #[tokio::test]

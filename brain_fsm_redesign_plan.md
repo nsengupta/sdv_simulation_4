@@ -185,42 +185,25 @@ Verify before proceeding:
 
 ## Phase 5 — Wire `apply_committed_quiescence` to Startup/Shutdown Barriers
 
-**Scope:** `virtual_car_actor.rs` (`apply_committed_quiescence`), hardcoded assembly list constant.
+**Scope:** See `brain_fsm_redesign_impl_Phase_5.md` for the full design and implementation plan.
+This entry is a high-level summary only; the detail document is authoritative.
 
-### RED tests (new functions in `test/quiescence_actor_contract.rs`)
+**Design settled (2026-06-22):**
 
-| Test | Asserts |
-|------|---------|
-| `test_power_on_sends_become_on_to_headlamp_before_idle` | After Brain receives `Fsm(PowerOn)`, headlamp actor receives `BecomeOn` message before FSM reaches `Idle`. Brain stays in `PreparingToStart` until `ZoneReady` reply comes back. |
-| `test_assemblies_ready_internal_injected_after_become_on_reply` | After Headlamp replies to `BecomeOn`, Brain injects `Internal(AssembliesReady)` → FSM transitions `PreparingToStart → Idle`. |
-| `test_power_off_sends_become_off_to_headlamp_before_off` | `Fsm(PowerOff)` → Brain sends `BecomeOff` → FSM reaches `PreparingToStop` and waits. |
-| `test_assemblies_stopped_internal_injected_after_become_off_reply` | After `BecomeOff` reply → `Internal(AssembliesStopped)` → FSM transitions `PreparingToStop → Off`. |
-
-**Code changes:**
-
-- [`crates/common/src/twin_runtime/controller/virtual_car_actor.rs`](crates/common/src/twin_runtime/controller/virtual_car_actor.rs):
-  - Add a compile-time constant:
-    ```rust
-    const MANAGED_ASSEMBLIES: &[ZoneId] = &[ZoneId::Headlamp];
-    ```
-  - In `apply_committed_quiescence`, match:
-    ```rust
-    DomainAction::StartAssemblies => {
-        // build TurnBarrier from MANAGED_ASSEMBLIES
-        // tell each assembly BecomeOn
-        // arm per-zone timer
-    }
-    DomainAction::StopAssemblies => { /* same for BecomeOff */ }
-    ```
-  - On `ZoneReady` drain completing the startup/shutdown barrier, inject `Internal(AssembliesReady)` or `Internal(AssembliesStopped)` into `begin_fsm_turn`
-
-Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this point (stub `let _ =` reference in actor). It will be deleted in Phase 6 once the `IgnitionOffReset` path is also gone.
+- `FsmEvent::AssemblyZoneReady(ZoneId)` is a proper **external** event (not `Internal`).
+- `VehicleContext.pending_assemblies: BTreeSet<ZoneId>` tracks remaining assemblies in the FSM layer.
+- Both `Off → PreparingToStart` and `Idle → PreparingToStop` initialise `pending_assemblies`.
+- The `PreparingToStart + Internal(AssembliesReady)` and `PreparingToStop + Internal(AssembliesStopped)` transition arms are **deleted** (become dead code after Phase 5).
+- `TurnBarrier::new_passthrough` is deleted; `PassthroughBarrier` type introduced.
+- `TurnBarrier::new_for_assembly_zone(turn_id, zone_id, msg, wait, timer, now)` added.
+- `fsm_event_headlamp_message` renamed to `user_event_to_headlamp_tell` (interim; superseded in Phase 6).
+- `fsm_preparation_contract.rs` must be updated: replace `Internal(AssembliesReady/Stopped)` with `AssemblyZoneReady(Headlamp)`.
 
 ### Discussion checkpoint after Phase 5
 
-1. Run `cargo test -p common` and `cargo test -p gateway` — the full e2e tests `controller_fsm_front_headlamp_ack_path` etc. must pass.
-2. Walk through the cold-start sequence: `PowerOn → PreparingToStart → (BecomeOn) → Idle → drive → PowerOff → PreparingToStop → (BecomeOff) → Off`. Trace the ledger output in `scenario_cold_start_get_status_shows_off`.
-3. The `IgnitionOffReset` path in `on_zone_ready` is now dead — it is never triggered because `PowerOff` no longer goes directly to `Off`. Confirm this by adding `unreachable!()` to the `IgnitionOffReset` match arm and running the full test suite; it must pass.
+1. Run `cargo test -p common` — full suite green; 4 new `startup_barrier_contract` tests green.
+2. Walk through the cold-start sequence: `PowerOn → PreparingToStart → (BecomeOn) → Idle → drive → PowerOff → PreparingToStop → (BecomeOff) → Off`.
+3. The `IgnitionOffReset` path in `on_zone_ready` is now dead. Add `unreachable!()` to that arm and run the full suite — it must pass. This is the gate for Phase 6.
 4. Sign off on the `MANAGED_ASSEMBLIES` constant design before Phase 8 replaces it.
 
 ---
@@ -244,7 +227,7 @@ Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this poi
 
 - [`crates/common/src/twin_runtime/zone_turn.rs`](crates/common/src/twin_runtime/zone_turn.rs):
   - Add `pub(crate) fn zone_message_for_event(event: &FsmEvent, state: &FsmState) -> Option<(ZoneId, ZoneMessage)>`
-  - Keep `fsm_event_headlamp_message` as the inner function called by the new wrapper (or inline it)
+  - The inner state-unaware function is now `user_event_to_headlamp_tell` (renamed from `fsm_event_headlamp_message` in Phase 5); reference it by the new name
   - In `PreparingToStart` / `PreparingToStop` branches, return `None`
 
 - [`crates/common/src/twin_runtime/twin_turn.rs`](crates/common/src/twin_runtime/twin_turn.rs):
@@ -259,9 +242,11 @@ Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this poi
 - [`crates/common/src/twin_runtime/controller/virtual_car_actor.rs`](crates/common/src/twin_runtime/controller/virtual_car_actor.rs):
   - Delete `PendingBrainTurn::IgnitionOffReset` (now confirmed unreachable from Phase 5 checkpoint)
   - Delete `ActorMode`, `ActorModeHintFromDomain`
+  - Delete `initial_headlamp_ctx` option from `VehicleControllerRuntimeOptions` (deferred from Phase 5: all tests now boot through the `BecomeOn` automatic flow)
 
 - [`crates/common/src/fsm/machineries.rs`](crates/common/src/fsm/machineries.rs):
   - Delete `DomainAction::EnterMode` (the `let _ =` stub is gone)
+  - Decide and act: remove `Operational::AssembliesReady` and `Operational::AssembliesStopped` enum variants (their transition arms were deleted in Phase 5; only doc-comment references remain — remove those too, or keep as tombstones per team agreement)
 
 **Complete deletion checklist** (from Gap 3 table in design doc):
 
@@ -278,8 +263,9 @@ Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this poi
 
 1. `cargo test -p common` and `cargo test -p gateway` — full suite green.
 2. Walk through the deletion checklist above: confirm every item is gone. `cargo build -p common` must emit zero dead-code warnings.
-3. `begin_fsm_turn` now has exactly **two** decision branches: zone-message → barrier wait; no zone-message → immediate (empty barrier drains immediately). Trace Case 1 and Case 2 from Section 2 of the design doc through the new code path.
-4. **Architecture review**: the intermediate design for a single assembly is complete. The system is correct, deterministic, and `handle()` has four arms. Run the property tests (`cargo test -p common --features proptest`) and the e2e tests together before introducing the second assembly.
+3. `begin_fsm_turn` now has exactly **two** decision branches: zone-message → barrier wait; no zone-message → passthrough (drains immediately). Trace Case 1 and Case 2 from Section 2 of the design doc through the new code path.
+4. **HOB invariant confirmed:** after state-aware zone routing, `UpdateAmbientLux` in `PreparingToStart` becomes a passthrough barrier. Confirm the HOB drain loop is NOT relaxed to let passthrough barriers skip ahead of zone-directed ones — they drain in arrival order and trivially fast. No bypass is needed or allowed (would violate ledger ordering).
+5. **Architecture review**: the intermediate design for a single assembly is complete. The system is correct, deterministic, and `handle()` has four arms. Run the property tests (`cargo test -p common --features proptest`) and the e2e tests together before introducing the second assembly.
 
 ---
 
@@ -304,6 +290,7 @@ Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this poi
 - `ZoneId`: add `Wiper`; `ZoneReply`: add `Wiper(WiperZoneReply)`
 - `zone_turn.rs`: add wiper routing in `zone_message_for_event`
 - `virtual_car_actor.rs`: update `MANAGED_ASSEMBLIES` to include `ZoneId::Wiper`; wire wiper actor reference in `VirtualCarRuntimeState`; `on_zone_ready` dispatches `ZoneReply::Wiper(...)` to wiper-specific handler
+- `turn_barrier.rs`: generalise `new_for_assembly_zone`'s `message` parameter from `HeadlampMessage` to a generic zone lifecycle message type (e.g. `ZoneLifecycleMessage` enum). The `HeadlampMessage` narrowing introduced in Phase 5 must not survive Phase 7.
 - [`crates/common/src/twin_runtime/zone_replies.rs`](crates/common/src/twin_runtime/zone_replies.rs): migrate to the Phase 7 map-based shape:
   ```rust
   pub struct ZoneReplies { pub replies: HashMap<ZoneId, ZoneReply> }
@@ -348,8 +335,14 @@ Note: `DomainAction::EnterMode` is still present in `machineries.rs` at this poi
 
 - [`crates/common/src/twin_runtime/controller/virtual_car_actor.rs`](crates/common/src/twin_runtime/controller/virtual_car_actor.rs):
   - Delete `MANAGED_ASSEMBLIES` constant
-  - In `apply_committed_quiescence`, when matching `DomainAction::StartAssemblies`, read `assemblies` from the current FSM state (`FsmState::PreparingToStart { assemblies }`) to build `TurnBarrier.pending`
+  - In `apply_committed_quiescence`, when matching `DomainAction::StartAssemblies`, read `assemblies` from the current FSM state (`FsmState::PreparingToStart { assemblies }`) to build the set of zone barriers
   - Actor no longer holds a parallel copy of the coordination topology
+
+**Note on `ctx.pending_assemblies`:** this field is NOT removed in Phase 8.
+`FsmState::PreparingToStart { assemblies }` carries the **initial topology** (which assemblies to start).
+`ctx.pending_assemblies` carries the **countdown** (which assemblies have not yet replied).
+They serve different purposes: the state variant answers "what must be started?"; the context answers "what is still waiting?".
+Phase 8 eliminates `MANAGED_ASSEMBLIES` from the actor, not `pending_assemblies` from the context.
 
 ### Discussion checkpoint after Phase 8
 

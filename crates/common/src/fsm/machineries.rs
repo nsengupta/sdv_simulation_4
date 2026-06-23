@@ -32,6 +32,8 @@ pub enum FsmState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ZoneId {
     Headlamp,
+    /// Phase-7 assembly: windshield wiper.
+    Wiper,
 }
 
 /// Brain-synthesized facts (detectors). Ledger-visible; not assembly / wire ingress.
@@ -62,6 +64,11 @@ pub enum FsmEvent {
     /// `FrontHeadlampOnAck`.  The FSM transition table counts down
     /// `ctx.pending_assemblies` and transitions when the set becomes empty.
     AssemblyZoneReady(ZoneId),
+    /// Rain has started falling on the windshield.  Binary fact — no intensity payload.
+    /// Routes to the wiper zone via `zone_message_for_event`; FSM self-loops.
+    RainsStarted,
+    /// Rain has stopped.  Complement of [`Self::RainsStarted`].
+    RainsStopped,
 }
 
 #[derive(Debug, Clone, PartialEq)]

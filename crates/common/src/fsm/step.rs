@@ -52,12 +52,16 @@ pub fn step(
         FsmEvent::PowerOn
             if *current_state == FsmState::Off && next_state == FsmState::PreparingToStart =>
         {
-            modified_ctx.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+            // Phase 7: both managed assemblies must report ZoneReady before the FSM
+            // exits PreparingToStart.  Keep in sync with MANAGED_ASSEMBLIES.
+            modified_ctx.pending_assemblies =
+                BTreeSet::from([ZoneId::Headlamp, ZoneId::Wiper]);
         }
         FsmEvent::PowerOff
             if *current_state == FsmState::Idle && next_state == FsmState::PreparingToStop =>
         {
-            modified_ctx.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+            modified_ctx.pending_assemblies =
+                BTreeSet::from([ZoneId::Headlamp, ZoneId::Wiper]);
         }
         FsmEvent::AssemblyZoneReady(zone_id) => {
             modified_ctx.pending_assemblies.remove(zone_id);

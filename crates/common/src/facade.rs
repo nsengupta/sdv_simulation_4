@@ -21,6 +21,8 @@ pub use crate::signals::VssSignal;
 pub use crate::digital_twin::CarSnapshot;
 /// Headlamp zone state on [`CarSnapshot::context`] (L1; ADR-5).
 pub use crate::vehicle_state::HeadlampState;
+/// Wiper zone state on [`CarSnapshot::context`] (L1; Phase 7).
+pub use crate::vehicle_state::WiperState;
 
 // --- Observation / optional runtime wiring ---
 

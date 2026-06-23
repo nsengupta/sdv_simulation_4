@@ -26,12 +26,11 @@ use std::time::Instant;
 use ractor::concurrency::JoinHandle;
 use ractor::MessagingErr;
 
-use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
+use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneMessage, ZoneReply};
 use crate::fsm::{FsmEvent, ZoneId};
 use crate::twin_runtime::twin_turn::ResolvedTurn;
 use crate::twin_runtime::zone_replies::ZoneReplies;
 use crate::twin_runtime::zone_tell_back::TellBackWait;
-use crate::vehicle_state::HeadlampMessage;
 
 /// Handle to the ractor timer task that sends `ZoneTellBackTimeout` to the brain.
 pub(crate) type TellBackTimer = JoinHandle<Result<(), MessagingErr<DigitalTwinCarVocabulary>>>;
@@ -83,7 +82,7 @@ pub(crate) struct TurnBarrier {
     zone_replies: HashMap<ZoneId, ZoneReply>,
     /// Original zone message per zone, kept so the correct payload is re-sent on
     /// each retry without the actor having to reconstruct it from the event.
-    zone_messages: HashMap<ZoneId, HeadlampMessage>,
+    zone_messages: HashMap<ZoneId, ZoneMessage>,
 }
 
 impl TurnBarrier {
@@ -110,7 +109,7 @@ impl TurnBarrier {
     pub fn new_for_assembly_zone(
         turn_id: u64,
         zone_id: ZoneId,
-        message: HeadlampMessage,
+        message: ZoneMessage,
         wait: TellBackWait,
         timer: TellBackTimer,
         now: Instant,
@@ -148,8 +147,11 @@ impl TurnBarrier {
     }
 
     /// The original zone message stored for `zone_id`; needed to re-tell on timeout retry.
-    pub fn zone_message(&self, zone_id: ZoneId) -> Option<HeadlampMessage> {
-        self.zone_messages.get(&zone_id).copied()
+    ///
+    /// Returns a cloned value so callers do not need lifetime annotations.
+    /// `ZoneMessage: Clone` (not `Copy`) — cloning is cheap (no heap data).
+    pub fn zone_message(&self, zone_id: ZoneId) -> Option<ZoneMessage> {
+        self.zone_messages.get(&zone_id).cloned()
     }
 
     // ── mutation ─────────────────────────────────────────────────────────────
@@ -159,7 +161,7 @@ impl TurnBarrier {
     pub fn add_pending_zone(
         &mut self,
         zone_id: ZoneId,
-        message: HeadlampMessage,
+        message: ZoneMessage,
         wait: TellBackWait,
         timer: TellBackTimer,
     ) {
@@ -229,19 +231,14 @@ impl TurnBarrier {
     ///
     /// Called only after `is_complete()` returns `true` so that all zone replies
     /// are guaranteed to be present (either real or synthetic).
+    ///
+    /// D6: `zone_replies: HashMap<ZoneId, ZoneReply>` and `ZoneReplies::replies` share the
+    /// same type — the map is moved directly, zero re-allocation.
     pub fn into_resolved_turn(self) -> ResolvedTurn {
-        let headlamp_reply = self.zone_replies.into_values().find_map(|r| match r {
-            ZoneReply::Headlamp(hl) => Some(hl),
-        });
-
-        let zone_replies = headlamp_reply
-            .map(ZoneReplies::with_headlamp_ingress)
-            .unwrap_or_default();
-
         ResolvedTurn {
             ingress: self.event,
             now: self.now,
-            zone_replies,
+            zone_replies: ZoneReplies { replies: self.zone_replies },
         }
     }
 }

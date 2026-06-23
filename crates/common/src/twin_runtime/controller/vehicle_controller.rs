@@ -32,6 +32,9 @@ pub struct VehicleControllerRuntimeOptions {
     /// Contract tests: headlamp twinlet ignores tells (exercises tell-back timeout path).
     #[doc(hidden)]
     pub test_silent_headlamp: bool,
+    /// Contract tests: wiper twinlet ignores tells (manual `ZoneReady` injection needed).
+    #[doc(hidden)]
+    pub test_silent_wiper: bool,
 }
 
 impl Default for VehicleControllerRuntimeOptions {
@@ -42,6 +45,7 @@ impl Default for VehicleControllerRuntimeOptions {
             diagnostic_tx: None,
             transition_tx: None,
             test_silent_headlamp: false,
+            test_silent_wiper: false,
         }
     }
 }

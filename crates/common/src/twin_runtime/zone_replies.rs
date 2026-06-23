@@ -1,35 +1,45 @@
 //! Collected zone tell-back embeds for one external hop (L4 orchestration).
 //!
+//! Phase 7 migrates from a field-per-zone layout (`headlamp: HeadlampReplies`) to a
+//! homogeneous `HashMap<ZoneId, ZoneReply>`.  `HeadlampReplies` is deleted; `with_reply`
+//! and `get` replace `with_headlamp_ingress`.
+//!
 //! Pure tests use [`ZoneReplies::simulate_locally`].
-//! Add a field per actorified zone — do not add top-level `headlamp_reply` on [`ResolvedTurn`].
 
-use crate::vehicle_state::HeadlampZoneReply;
+use std::collections::HashMap;
 
-/// Tell-back embeds for the headlamp zone on one ingress hop.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct HeadlampReplies {
-    /// Tell-back for the headlamp message demuxed from this hop's FSM ingress
-    /// ([`super::zone_turn::user_event_to_headlamp_tell`]); `None` on pure/local path.
-    pub ingress: Option<HeadlampZoneReply>,
-}
+use crate::digital_twin::ZoneReply;
+use crate::fsm::ZoneId;
 
-/// All zone embeds collected before [`super::commit_resolved_turn`].
+/// All zone tell-back embeds collected before [`super::commit_resolved_turn`].
+///
+/// `replies` is a homogeneous map keyed by [`ZoneId`]: `zone_turn` calls
+/// `get(&zone_id)` to find the relevant tell-back for each assembly, rather than
+/// reaching into a zone-specific field.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ZoneReplies {
-    pub headlamp: HeadlampReplies,
+    pub replies: HashMap<ZoneId, ZoneReply>,
 }
 
 impl ZoneReplies {
-    /// Pure tests / local [`super::zone_turn`] — no twinlet tell-back; L1 runs in-process.
+    /// Pure tests / local path — no twinlet tell-back; L1 runs in-process.
     pub fn simulate_locally() -> Self {
-        Self::default()
+        Self { replies: HashMap::new() }
     }
 
-    pub fn with_headlamp_ingress(ingress: HeadlampZoneReply) -> Self {
-        Self {
-            headlamp: HeadlampReplies {
-                ingress: Some(ingress),
-            },
-        }
+    /// Build a `ZoneReplies` carrying exactly one zone reply.
+    ///
+    /// Call-site translation:
+    /// - Old: `ZoneReplies::with_headlamp_ingress(r)` →
+    /// - New: `ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(r))`
+    pub fn with_reply(zone_id: ZoneId, reply: ZoneReply) -> Self {
+        let mut map = HashMap::new();
+        map.insert(zone_id, reply);
+        Self { replies: map }
+    }
+
+    /// Look up the reply for a given zone (borrow).
+    pub fn get(&self, id: &ZoneId) -> Option<&ZoneReply> {
+        self.replies.get(id)
     }
 }

@@ -1,16 +1,10 @@
 //! Unit tests for the FSM step contract (`step`).
 
-use std::collections::BTreeSet;
 use crate::digital_twin::{verify_state_laws, DigitalTwinCar, DigitalTwinCarError};
 use crate::fsm::{DomainAction, FsmEvent, FsmState, ZoneId};
 use crate::twin_runtime::twin_turn;
 use crate::vehicle_state::VehicleContext;
 
-fn ctx_with_headlamp_pending() -> VehicleContext {
-    let mut c = VehicleContext::default();
-    c.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
-    c
-}
 use crate::vehicle_physics::{
     EXTREME_OPERATION_WARNING_MESSAGE, SPEED_THRESHOLD_WARNING_MESSAGE,
 };
@@ -125,25 +119,22 @@ fn test_step_standard_commute_flow() {
 
     let sequence: Vec<(FsmEvent, FsmState)> = vec![
         (FsmEvent::PowerOn, FsmState::PreparingToStart),
-        // AssemblyZoneReady drains the startup barrier; `step` removes Headlamp from pending.
-        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::Idle),
+        // Phase 7: TWO assemblies pending; each AssemblyZoneReady removes one.
+        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::PreparingToStart),
+        (FsmEvent::AssemblyZoneReady(ZoneId::Wiper), FsmState::Idle),
         (FsmEvent::UpdateRpm(1500), FsmState::Driving),
         (FsmEvent::UpdateRpm(1300), FsmState::Driving),
         (FsmEvent::UpdateRpm(0), FsmState::Idle),
         (FsmEvent::PowerOff, FsmState::PreparingToStop),
-        // AssemblyZoneReady drains the shutdown barrier.
-        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::Off),
+        // Phase 7: TWO assemblies pending; each AssemblyZoneReady removes one.
+        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::PreparingToStop),
+        (FsmEvent::AssemblyZoneReady(ZoneId::Wiper), FsmState::Off),
     ];
 
     for (event, expected_state) in sequence {
-        // For AssemblyZoneReady events, supply a context with Headlamp pending so the
-        // transition table can compute the countdown correctly.
-        let ctx_for_event = if matches!(event, FsmEvent::AssemblyZoneReady(_)) {
-            ctx_with_headlamp_pending()
-        } else {
-            car.context().clone()
-        };
-        let result = twin_turn(car.current_state(), &ctx_for_event, &event, Instant::now());
+        // Use accumulated car context for all events; PowerOn/PowerOff set pending_assemblies
+        // correctly in step.rs, so no manual override is needed.
+        let result = twin_turn(car.current_state(), car.context(), &event, Instant::now());
         car.apply_step(result.next_state, result.modified_ctx);
         assert_eq!(*car.current_state(), expected_state, "event={event:?}");
     }
@@ -159,12 +150,12 @@ fn test_state_laws_hold_over_a_legal_journey_and_records_carry_intents() {
     let mut ctx = valid_twin_context();
     let mut reached_warning = false;
 
-    // Phase 1: PowerOn bridges via PreparingToStart before Idle.
-    // After PowerOn, step() initialises pending_assemblies={Headlamp}, so the next
-    // twin_turn call sees the correct context for AssemblyZoneReady.
+    // Phase 7: PowerOn bridges via PreparingToStart before Idle.
+    // step() initialises pending_assemblies={Headlamp, Wiper}; both barriers must drain.
     for event in [
         FsmEvent::PowerOn,
         FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
+        FsmEvent::AssemblyZoneReady(ZoneId::Wiper),
         FsmEvent::UpdateRpm(1500),
         FsmEvent::UpdateRpm(5600),
     ] {

@@ -134,12 +134,31 @@ fn test_zone_message_for_event_returns_none_during_preparing_to_stop() {
 
 #[test]
 fn test_zone_message_for_event_returns_some_during_idle() {
+    use crate::digital_twin::ZoneMessage;
     let event = FsmEvent::UpdateAmbientLux(10);
     let result = zone_message_for_event(&event, &FsmState::Idle);
+    match result {
+        Some((crate::fsm::ZoneId::Headlamp, ZoneMessage::Headlamp(HeadlampMessage::AmbientLux(10)))) => {}
+        other => panic!(
+            "zone_message_for_event must return Some((Headlamp, Headlamp(AmbientLux(10)))) when Idle; got {other:?}"
+        ),
+    }
+}
+
+// --- Phase 7: RainsStarted self-loop in Idle ---
+
+#[test]
+fn test_rains_started_is_self_loop_in_idle() {
+    let result = step(&FsmState::Idle, &ctx(), &FsmEvent::RainsStarted, Instant::now());
     assert_eq!(
-        result,
-        Some(HeadlampMessage::AmbientLux(10)),
-        "zone_message_for_event must delegate to user_event_to_headlamp_tell when Idle"
+        result.next_state,
+        FsmState::Idle,
+        "RainsStarted must be a self-loop in Idle (zone handles it, FSM state unchanged)"
+    );
+    assert!(
+        result.actions.is_empty(),
+        "RainsStarted in Idle must produce no FSM domain actions; got: {:?}",
+        result.actions
     );
 }
 

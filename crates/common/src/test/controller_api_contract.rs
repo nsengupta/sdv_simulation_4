@@ -98,16 +98,17 @@ async fn given_applied_events_when_get_snapshot_then_as_of_seq_counts_every_even
         .expect("snapshot");
     assert_eq!(after_power_on.as_of_seq(), 1, "PowerOn → PreparingToStart is seq 1");
 
-    // Phase 5: startup barrier drains automatically when headlamp replies ZoneReady.
-    // AssemblyZoneReady(Headlamp) → Idle is seq 2.
+    // Phase 7: startup barrier drains for BOTH assemblies.
+    //   seq 2: AssemblyZoneReady(Headlamp) → PreparingToStart (Wiper still pending)
+    //   seq 3: AssemblyZoneReady(Wiper) → Idle
     wait_fsm_state(&controller, FsmState::Idle, Duration::from_millis(500)).await;
     let after_idle = controller
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(after_idle.as_of_seq(), 2, "AssemblyZoneReady → Idle is seq 2");
+    assert_eq!(after_idle.as_of_seq(), 3, "AssemblyZoneReady(Wiper) → Idle is seq 3");
 
-    // RPM in dark (default lux=0): zone hop (seq 3) + LightingUnsafe internal hop (seq 4).
+    // RPM in dark (default lux=0): zone hop (seq 4) + LightingUnsafe internal hop (seq 5).
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(
             crate::VssSignal::EngineRpm(1500),
@@ -120,15 +121,15 @@ async fn given_applied_events_when_get_snapshot_then_as_of_seq_counts_every_even
         .expect("snapshot");
     assert_eq!(
         after_rpm.as_of_seq(),
-        4,
-        "dark driving entry emits zone hop (seq 3) + internal LightingUnsafe hop (seq 4)"
+        5,
+        "dark driving entry emits zone hop (seq 4) + internal LightingUnsafe hop (seq 5)"
     );
     // A pure query does not advance the ledger.
     let again = controller
         .get_snapshot(Some(Duration::from_millis(250)))
         .await
         .expect("snapshot");
-    assert_eq!(again.as_of_seq(), 4);
+    assert_eq!(again.as_of_seq(), 5);
 }
 
 #[tokio::test]

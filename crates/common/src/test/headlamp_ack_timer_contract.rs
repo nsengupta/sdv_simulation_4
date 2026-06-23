@@ -33,10 +33,11 @@ async fn given_actor_driving_in_dark_when_ack_wait_elapses_without_timer_tick_th
         handle,
     };
 
-    // Phase 1: bridge to Idle, then drain the two startup ledger rows.
+    // Phase 7: bridge to Idle, drain THREE startup rows (PowerOn + Headlamp Ready + Wiper Ready).
     power_on_to_idle(&controller).await;
     let _ = rx.recv().await.expect("power on → preparing row");
-    let _ = rx.recv().await.expect("assemblies ready → idle row");
+    let _ = rx.recv().await.expect("headlamp zone ready → preparing row");
+    let _ = rx.recv().await.expect("wiper zone ready → idle row");
 
     submit_daylight_ambient(&controller).await;
     let _ = rx.recv().await.expect("bright lux row");
@@ -116,10 +117,11 @@ async fn given_actor_on_requested_when_ack_before_deadline_then_no_spontaneous_i
         handle,
     };
 
-    // Phase 1: bridge to Idle, drain startup rows.
+    // Phase 7: bridge to Idle, drain THREE startup rows (PowerOn + Headlamp Ready + Wiper Ready).
     power_on_to_idle(&controller).await;
     let _ = rx.recv().await.expect("power on → preparing row");
-    let _ = rx.recv().await.expect("assemblies ready → idle row");
+    let _ = rx.recv().await.expect("headlamp zone ready → preparing row");
+    let _ = rx.recv().await.expect("wiper zone ready → idle row");
 
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(

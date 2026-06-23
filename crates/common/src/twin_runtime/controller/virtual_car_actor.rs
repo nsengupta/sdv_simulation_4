@@ -12,6 +12,13 @@
 //! `barrier_queue`.  The drain loop (`try_drain_barrier_queue`) commits completed barriers
 //! strictly from the **front**, preserving event-arrival order regardless of the order in
 //! which zone replies arrive.
+//!
+//! ## Phase 7 — second assembly (Wiper)
+//!
+//! `MANAGED_ASSEMBLIES` now includes `ZoneId::Wiper`.  Zone-dispatch helpers
+//! (`become_on_message_for`, `become_off_message_for`, `tell_zone`, `synthetic_reply_for`)
+//! keep `StartAssemblies`/`StopAssemblies` loops zone-agnostic.  `handle()` still has
+//! exactly **four arms**: `Fsm`, `ZoneReady`, `ZoneTellBackTimeout`, `GetStatus`.
 
 use async_trait::async_trait;
 use ractor::concurrency::Duration as RactorDuration;
@@ -25,22 +32,29 @@ use crate::diagnostic::{
     diag_state_transition, diag_timer_tick, diag_actuation_failure, diag_warning,
     diag_transition_sink_full, diag_transition_sink_closed,
 };
-use crate::digital_twin::{CarSnapshot, DigitalTwinCar, DigitalTwinCarVocabulary};
+use crate::digital_twin::{CarSnapshot, DigitalTwinCar, DigitalTwinCarVocabulary, ZoneMessage, ZoneReply};
 use crate::twin_runtime::constants::ZONE_TELL_BACK_WAIT;
 use crate::twin_runtime::controller::actuation_manager::{
     ActuationManager, DefaultActuationManager,
 };
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::fsm::{
-    self, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState, HeadlampState,
+    self, DomainAction, FrontHeadlampSwitchDirection, FsmEvent, FsmState, HeadlampState, ZoneId,
 };
-use crate::twin_runtime::headlamp_actor::{tell_headlamp_zone, HeadlampActor, HeadlampActorMsg, HeadlampActorState};
+use crate::twin_runtime::headlamp_actor::{
+    tell_headlamp_zone, HeadlampActor, HeadlampActorMsg, HeadlampActorState,
+};
+use crate::twin_runtime::wiper_actor::{
+    tell_wiper_zone, WiperActor, WiperActorMsg, WiperActorState,
+};
 use crate::twin_runtime::twin_turn::{commit_resolved_turn as resolve_quiescence, ResolvedTurn};
 use crate::twin_runtime::ZoneReplies;
 use crate::twin_runtime::zone_tell_back::{synthetic_unresponsive_headlamp_reply, TellBackWait};
 use crate::twin_runtime::zone_turn::zone_message_for_event;
-use crate::twin_runtime::turn_barrier::{BarrierEntry, PassthroughBarrier, TellBackTimer, TimeoutOutcome, TurnBarrier};
-use crate::vehicle_state::{HeadlampMessage, VehicleContext};
+use crate::twin_runtime::turn_barrier::{
+    BarrierEntry, PassthroughBarrier, TellBackTimer, TimeoutOutcome, TurnBarrier,
+};
+use crate::vehicle_state::{HeadlampMessage, WiperMessage, VehicleContext};
 use crate::published::{PublishedTransitionRecord, SessionEpoch};
 use crate::transition_sink::{TokioMpscTransitionRecordSink, TransitionRecordSink, TransitionSinkError};
 
@@ -70,16 +84,18 @@ impl From<&str> for VirtualCarActorArgs {
 
 /// Compile-time list of assemblies the brain actor coordinates.
 ///
+/// Phase 7 adds `ZoneId::Wiper`.  The `StartAssemblies`/`StopAssemblies` loops
+/// iterate over this slice; no structural change to those loops is needed.
+///
 /// Phase 8 replaces this constant with assembly IDs embedded directly in
 /// `FsmState::PreparingToStart { assemblies }` and `PreparingToStop { assemblies }`.
-/// For Phases 5–7 this constant is the sole place where `ZoneId::Headlamp`
-/// (and future `ZoneId::Wiper`) is listed as a managed assembly.
-const MANAGED_ASSEMBLIES: &[crate::fsm::ZoneId] = &[crate::fsm::ZoneId::Headlamp];
+const MANAGED_ASSEMBLIES: &[ZoneId] = &[ZoneId::Headlamp, ZoneId::Wiper];
 
 /// Mutable state of the virtual car actor, held across `handle` calls.
 pub struct VirtualCarRuntimeState {
     twin_car: DigitalTwinCar,
     headlamp_actor: ActorRef<HeadlampActorMsg>,
+    wiper_actor: ActorRef<WiperActorMsg>,
     /// Stable self-reference used to arm timers and send `ZoneTellBackTimeout` messages.
     /// Captured in `pre_start` via `myself.clone()`; idiomatic actor self-ref pattern.
     self_ref: ActorRef<DigitalTwinCarVocabulary>,
@@ -175,9 +191,16 @@ impl Actor for VirtualCarActor {
         ))
         .await?;
 
+        let (wiper_actor, _) = ractor::spawn::<WiperActor>(WiperActorState::new(
+            Default::default(),
+            args.runtime_options.test_silent_wiper,
+        ))
+        .await?;
+
         Ok(VirtualCarRuntimeState {
             twin_car: DigitalTwinCar::new(identity, FsmState::Off, VehicleContext::default())?,
             headlamp_actor,
+            wiper_actor,
             self_ref: myself.clone(),
             next_turn_id: 1,
             barrier_queue: VecDeque::new(),
@@ -190,8 +213,10 @@ impl Actor for VirtualCarActor {
         })
     }
 
-    /// Main message dispatch.  Every `Fsm` event immediately gets its own [`TurnBarrier`]
-    /// pushed to the back of `barrier_queue`; the drain loop commits from the front.
+    /// Main message dispatch — exactly **four** arms (unchanged from Phase 6).
+    ///
+    /// Adding the Wiper assembly required zero new arms: zone routing is handled inside
+    /// `begin_fsm_turn` and the `StartAssemblies`/`StopAssemblies` loop.
     async fn handle(
         &self,
         myself: ActorRef<Self::Msg>,
@@ -208,7 +233,6 @@ impl Actor for VirtualCarActor {
                     }
                 }
                 let now = Instant::now();
-                // Every event gets its own barrier immediately (no pending_turn guard).
                 Self::begin_fsm_turn(&myself, runtime_state, evt_arrived, now).await?;
                 Self::try_drain_barrier_queue(runtime_state).await
             }
@@ -218,14 +242,7 @@ impl Actor for VirtualCarActor {
                 tell_attempt,
                 reply,
             } => {
-                Self::on_zone_ready(
-                    runtime_state,
-                    zone_id,
-                    turn_id,
-                    tell_attempt,
-                    reply,
-                )
-                .await?;
+                Self::on_zone_ready(runtime_state, zone_id, turn_id, tell_attempt, reply).await?;
                 Self::try_drain_barrier_queue(runtime_state).await
             }
             ZoneTellBackTimeout {
@@ -249,7 +266,7 @@ impl Actor for VirtualCarActor {
         }
     }
 
-    /// Abort all in-flight timers and stop the headlamp twinlet.
+    /// Abort all in-flight timers and stop both twinlets.
     async fn post_stop(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -259,25 +276,72 @@ impl Actor for VirtualCarActor {
             entry.abort_all_timers();
         }
         runtime_state.barrier_queue.clear();
-        // Interim: brain stops the headlamp twinlet here. Target: supervisor-ordered teardown.
         runtime_state.headlamp_actor.stop(None);
+        runtime_state.wiper_actor.stop(None);
         Ok(())
     }
 }
 
 impl VirtualCarActor {
-    // ── timer helper ─────────────────────────────────────────────────────────
+    // ── zone-dispatch helpers (D11) ────────────────────────────────────────────
 
-    /// Schedule a `ZoneTellBackTimeout` message after `ZONE_TELL_BACK_WAIT`.
+    fn become_on_message_for(zone_id: ZoneId) -> ZoneMessage {
+        match zone_id {
+            ZoneId::Headlamp => ZoneMessage::Headlamp(HeadlampMessage::BecomeOn),
+            ZoneId::Wiper   => ZoneMessage::Wiper(WiperMessage::BecomeOn),
+        }
+    }
+
+    fn become_off_message_for(zone_id: ZoneId) -> ZoneMessage {
+        match zone_id {
+            ZoneId::Headlamp => ZoneMessage::Headlamp(HeadlampMessage::BecomeOff),
+            ZoneId::Wiper   => ZoneMessage::Wiper(WiperMessage::BecomeOff),
+        }
+    }
+
+    fn tell_zone(
+        runtime_state: &VirtualCarRuntimeState,
+        brain: &ActorRef<DigitalTwinCarVocabulary>,
+        _zone_id: ZoneId,
+        message: &ZoneMessage,
+        turn_id: u64,
+        tell_attempt: u32,
+        now: Instant,
+    ) -> Result<(), ActorProcessingErr> {
+        match message {
+            ZoneMessage::Headlamp(m) => tell_headlamp_zone(
+                &runtime_state.headlamp_actor, brain, turn_id, tell_attempt, *m, now,
+            ),
+            ZoneMessage::Wiper(m) => tell_wiper_zone(
+                &runtime_state.wiper_actor, brain, turn_id, tell_attempt, *m, now,
+            ),
+        }
+    }
+
+    fn synthetic_reply_for(ctx: &VehicleContext, zone_id: ZoneId) -> ZoneReply {
+        match zone_id {
+            ZoneId::Headlamp => ZoneReply::Headlamp(
+                synthetic_unresponsive_headlamp_reply(&ctx.headlamp)
+            ),
+            ZoneId::Wiper => ZoneReply::Wiper(crate::vehicle_state::WiperZoneReply {
+                ctx: ctx.wiper.clone(),
+                outcomes: vec![],
+            }),
+        }
+    }
+
+    // ── timer helper ──────────────────────────────────────────────────────────
+
     fn arm_tell_back_timer(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
+        zone_id: ZoneId,
         turn_id: u64,
         tell_attempt: u32,
     ) -> TellBackTimer {
         brain.send_after(
             RactorDuration::from(ZONE_TELL_BACK_WAIT),
             move || DigitalTwinCarVocabulary::ZoneTellBackTimeout {
-                zone_id: crate::fsm::ZoneId::Headlamp,
+                zone_id,
                 turn_id,
                 tell_attempt,
             },
@@ -291,17 +355,14 @@ impl VirtualCarActor {
     ///
     /// Two mutually exclusive paths:
     ///
-    /// 1. **Zone-directed** — `zone_message_for_event` returns `Some`.  A [`TurnBarrier`]
-    ///    with `Headlamp` pending is created; the zone gets a tell and a timer.
+    /// 1. **Zone-directed** — `zone_message_for_event` returns `Some((zone_id, message))`.
+    ///    A [`TurnBarrier`] with the relevant zone pending is created; the zone gets a tell
+    ///    and a timer.
     ///
     /// 2. **Passthrough** — `zone_message_for_event` returns `None`.  The
     ///    [`PassthroughBarrier`] is instantly drainable and keeps the queue ordered.
     ///    This covers events with no zone mapping (e.g. `PowerOn`, `TimerTick`) AND
     ///    user events arriving during `PreparingToStart` or `PreparingToStop`.
-    ///
-    /// Note: `AssemblyZoneReady` events never go through `begin_fsm_turn` — assembly barriers
-    /// are created in `apply_committed_quiescence` when `StartAssemblies`/`StopAssemblies` is
-    /// received, and committed by the drain loop when their zone replies arrive.
     async fn begin_fsm_turn(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
@@ -310,20 +371,14 @@ impl VirtualCarActor {
     ) -> Result<(), ActorProcessingErr> {
         let turn_id = runtime_state.alloc_turn_id();
 
-        // Zone-directed: event maps to a headlamp message in the current FSM state.
-        if let Some(message) = zone_message_for_event(&event, runtime_state.twin_car.current_state()) {
+        if let Some((zone_id, message)) =
+            zone_message_for_event(&event, runtime_state.twin_car.current_state())
+        {
             let wait = TellBackWait::new(turn_id);
-            tell_headlamp_zone(
-                &runtime_state.headlamp_actor,
-                brain,
-                turn_id,
-                0,
-                message,
-                now,
-            )?;
-            let timer = Self::arm_tell_back_timer(brain, turn_id, 0);
+            Self::tell_zone(runtime_state, brain, zone_id, &message, turn_id, 0, now)?;
+            let timer = Self::arm_tell_back_timer(brain, zone_id, turn_id, 0);
             let mut barrier = TurnBarrier::new(turn_id, event, now);
-            barrier.add_pending_zone(crate::fsm::ZoneId::Headlamp, message, wait, timer);
+            barrier.add_pending_zone(zone_id, message, wait, timer);
             runtime_state.barrier_queue.push_back(BarrierEntry::Waiting(barrier));
             return Ok(());
         }
@@ -338,18 +393,15 @@ impl VirtualCarActor {
 
     /// Handle a `ZoneReady` from a zone twinlet.
     ///
-    /// Finds the barrier by `turn_id`; validates `tell_attempt`; calls `act_on_zone_reply`.
+    /// Finds the barrier by `turn_id`; validates `tell_attempt`; stores the reply.
+    /// No zone-specific unpacking — `reply` is stored as-is (`ZoneReply` enum).
     async fn on_zone_ready(
         runtime_state: &mut VirtualCarRuntimeState,
-        zone_id: crate::fsm::ZoneId,
+        zone_id: ZoneId,
         turn_id: u64,
         tell_attempt: u32,
-        reply: crate::digital_twin::ZoneReply,
+        reply: ZoneReply,
     ) -> Result<(), ActorProcessingErr> {
-        let reply_hl = match reply {
-            crate::digital_twin::ZoneReply::Headlamp(r) => r,
-        };
-
         let Some(entry) = runtime_state
             .barrier_queue
             .iter_mut()
@@ -358,14 +410,14 @@ impl VirtualCarActor {
             return Ok(());
         };
         let Some(barrier) = entry.as_waiting_mut() else {
-            return Ok(()); // passthrough entries have no pending zones
+            return Ok(());
         };
 
         if !barrier.tell_attempt_matches(zone_id, tell_attempt) {
-            return Ok(()); // stale or mismatched reply — discard
+            return Ok(());
         }
 
-        barrier.act_on_zone_reply(zone_id, crate::digital_twin::ZoneReply::Headlamp(reply_hl));
+        barrier.act_on_zone_reply(zone_id, reply);
         Ok(())
     }
 
@@ -375,13 +427,10 @@ impl VirtualCarActor {
     async fn on_zone_timeout(
         brain: &ActorRef<DigitalTwinCarVocabulary>,
         runtime_state: &mut VirtualCarRuntimeState,
-        zone_id: crate::fsm::ZoneId,
+        zone_id: ZoneId,
         turn_id: u64,
         tell_attempt: u32,
     ) -> Result<(), ActorProcessingErr> {
-        // Snapshot headlamp ctx for potential synthetic reply (before barrier borrow).
-        let headlamp_ctx = runtime_state.twin_car.context().headlamp.clone();
-
         let outcome = {
             let Some(entry) = runtime_state
                 .barrier_queue
@@ -398,7 +447,6 @@ impl VirtualCarActor {
 
         match outcome {
             TimeoutOutcome::Retry { next_attempt } => {
-                // Re-tell the zone with the next attempt number.
                 let (msg, barrier_now) = runtime_state
                     .barrier_queue
                     .iter()
@@ -411,15 +459,8 @@ impl VirtualCarActor {
                         ))
                     })?;
 
-                tell_headlamp_zone(
-                    &runtime_state.headlamp_actor,
-                    brain,
-                    turn_id,
-                    next_attempt,
-                    msg,
-                    barrier_now,
-                )?;
-                let new_timer = Self::arm_tell_back_timer(brain, turn_id, next_attempt);
+                Self::tell_zone(runtime_state, brain, zone_id, &msg, turn_id, next_attempt, barrier_now)?;
+                let new_timer = Self::arm_tell_back_timer(brain, zone_id, turn_id, next_attempt);
 
                 if let Some(entry) = runtime_state
                     .barrier_queue
@@ -432,18 +473,15 @@ impl VirtualCarActor {
                 }
             }
             TimeoutOutcome::GaveUp => {
-                // All retries exhausted: synthesise a reply and close the zone's slot.
-                let synthetic = synthetic_unresponsive_headlamp_reply(&headlamp_ctx);
+                // Synthesise a reply from current context (no intermediate mutable borrow).
+                let synthetic = Self::synthetic_reply_for(runtime_state.twin_car.context(), zone_id);
                 if let Some(entry) = runtime_state
                     .barrier_queue
                     .iter_mut()
                     .find(|e| e.turn_id() == turn_id)
                 {
                     if let Some(barrier) = entry.as_waiting_mut() {
-                        barrier.act_on_zone_reply(
-                            zone_id,
-                            crate::digital_twin::ZoneReply::Headlamp(synthetic),
-                        );
+                        barrier.act_on_zone_reply(zone_id, synthetic);
                     }
                 }
             }
@@ -455,11 +493,10 @@ impl VirtualCarActor {
     /// Handle a spontaneous zone event (ACK timer, future assembly deadlines).
     ///
     /// These are not correlated to a brain `turn_id`, so they do not interact with
-    /// `barrier_queue`.  The event is committed directly; the drain loop runs afterwards
-    /// (called from the `handle` arm).
+    /// `barrier_queue`.  The event is committed directly; the drain loop runs afterwards.
     async fn on_zone_spontaneous(
         runtime_state: &mut VirtualCarRuntimeState,
-        _zone_id: crate::fsm::ZoneId,
+        _zone_id: ZoneId,   // headlamp-only in Phase 7; wiper has no spontaneous events
         event: crate::digital_twin::ZoneSpontaneousEvent,
     ) -> Result<(), ActorProcessingErr> {
         let crate::digital_twin::ZoneSpontaneousEvent::Headlamp {
@@ -472,7 +509,7 @@ impl VirtualCarActor {
             ResolvedTurn {
                 ingress: FsmEvent::FrontHeadlampActuationIncomplete { direction, cause },
                 now: Instant::now(),
-                zone_replies: ZoneReplies::with_headlamp_ingress(reply),
+                zone_replies: ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(reply)),
             },
         )
         .await
@@ -483,10 +520,6 @@ impl VirtualCarActor {
     /// Commit all complete entries from the front of `barrier_queue`.
     ///
     /// **Head-of-buffer (HOB) invariant**: only the front entry may be committed.
-    /// If the front [`TurnBarrier`] is still waiting for a zone reply, later entries —
-    /// even if their own zones have already replied — must wait.  This guarantees that
-    /// `commit_resolved_turn` is called in strict event-arrival order regardless of the
-    /// order in which zone twinlets reply.
     async fn try_drain_barrier_queue(
         runtime_state: &mut VirtualCarRuntimeState,
     ) -> Result<(), ActorProcessingErr> {
@@ -495,7 +528,6 @@ impl VirtualCarActor {
                 break;
             };
             if !front.is_complete() {
-                // Front entry is still awaiting a zone reply; nothing can proceed.
                 break;
             }
             let committed = runtime_state.barrier_queue.pop_front().expect("checked above");
@@ -507,7 +539,6 @@ impl VirtualCarActor {
 
     // ── quiescence & apply ────────────────────────────────────────────────────
 
-    /// Run the quiescence pipeline on the resolved turn, then apply the result.
     async fn commit_resolved_turn(
         runtime_state: &mut VirtualCarRuntimeState,
         resolved: ResolvedTurn,
@@ -555,10 +586,10 @@ impl VirtualCarActor {
                     let brain = runtime_state.self_ref.clone();
                     for &zone_id in MANAGED_ASSEMBLIES {
                         let turn_id = runtime_state.alloc_turn_id();
-                        let msg = HeadlampMessage::BecomeOn;
+                        let msg = Self::become_on_message_for(zone_id);
                         let wait = TellBackWait::new(turn_id);
-                        tell_headlamp_zone(&runtime_state.headlamp_actor, &brain, turn_id, 0, msg, now)?;
-                        let timer = Self::arm_tell_back_timer(&brain, turn_id, 0);
+                        Self::tell_zone(runtime_state, &brain, zone_id, &msg, turn_id, 0, now)?;
+                        let timer = Self::arm_tell_back_timer(&brain, zone_id, turn_id, 0);
                         let barrier = TurnBarrier::new_for_assembly_zone(turn_id, zone_id, msg, wait, timer, now);
                         runtime_state.barrier_queue.push_back(BarrierEntry::Waiting(barrier));
                     }
@@ -568,10 +599,10 @@ impl VirtualCarActor {
                     let brain = runtime_state.self_ref.clone();
                     for &zone_id in MANAGED_ASSEMBLIES {
                         let turn_id = runtime_state.alloc_turn_id();
-                        let msg = HeadlampMessage::BecomeOff;
+                        let msg = Self::become_off_message_for(zone_id);
                         let wait = TellBackWait::new(turn_id);
-                        tell_headlamp_zone(&runtime_state.headlamp_actor, &brain, turn_id, 0, msg, now)?;
-                        let timer = Self::arm_tell_back_timer(&brain, turn_id, 0);
+                        Self::tell_zone(runtime_state, &brain, zone_id, &msg, turn_id, 0, now)?;
+                        let timer = Self::arm_tell_back_timer(&brain, zone_id, turn_id, 0);
                         let barrier = TurnBarrier::new_for_assembly_zone(turn_id, zone_id, msg, wait, timer, now);
                         runtime_state.barrier_queue.push_back(BarrierEntry::Waiting(barrier));
                     }

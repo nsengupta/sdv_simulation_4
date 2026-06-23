@@ -64,6 +64,9 @@ mod startup_barrier_contract;
 #[cfg(test)]
 mod turn_barrier_contract;
 
+#[cfg(test)]
+pub mod wiper_zone_contract;
+
 /// A RAII (Resource Acquisition Is Initialization) guard for Ractor tests.
 ///
 /// Holding one binds a spawned actor's lifetime to a stack scope: on drop it calls

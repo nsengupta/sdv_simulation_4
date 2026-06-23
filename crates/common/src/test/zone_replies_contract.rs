@@ -1,10 +1,10 @@
-//! Zone-agnostic commit inputs: [`ZoneReplies`] on [`ResolvedTurn`] (clone template for zone #2).
+//! Zone-agnostic commit inputs: [`ZoneReplies`] on [`ResolvedTurn`] (Phase 7: map-based).
 
 use std::time::Instant;
 
-use crate::fsm::{FsmEvent, FsmState, HeadlampState};
+use crate::digital_twin::ZoneReply;
+use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
 use crate::twin_runtime::{commit_resolved_turn, twin_turn, ResolvedTurn, ZoneReplies};
-use crate::twin_runtime::zone_replies::HeadlampReplies;
 use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply, VehicleContext};
 use crate::vehicle_physics::{FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD};
 
@@ -16,25 +16,24 @@ fn driving_ctx() -> VehicleContext {
     ctx
 }
 
-// --- Phase 6 structural tests ---
+// --- Phase 6 regression guards (updated for Phase 7 map API) ---
 
 #[test]
-fn test_zone_replies_simulate_locally_has_no_ignition_off_reset() {
+fn test_zone_replies_simulate_locally_is_empty() {
+    // Phase 7: simulate_locally returns an empty map (no zone replies at all).
     let r = ZoneReplies::simulate_locally();
-    assert_eq!(
-        r.headlamp.ingress, None,
-        "simulate_locally must produce ingress=None"
+    assert!(
+        r.get(&ZoneId::Headlamp).is_none(),
+        "simulate_locally must produce an empty map; get(Headlamp) must be None"
     );
-    // Structural guard: HeadlampReplies has exactly one field.
-    // If ignition_off_reset were re-added, this destructuring would fail to compile.
-    let HeadlampReplies { ingress: _ } = r.headlamp;
+    assert!(
+        r.replies.is_empty(),
+        "simulate_locally must produce an empty map"
+    );
 }
 
 #[test]
 fn test_power_off_does_not_speculatively_run_zone_turn() {
-    // PowerOff → PreparingToStop (not Off), so the old IgnitionOffReset block must not fire.
-    // This is a regression guard: if IgnitionOffReset logic is re-introduced, this test
-    // would detect an unexpected context mutation.
     let ctx = VehicleContext::default();
     let result = twin_turn(
         &FsmState::Idle,
@@ -43,7 +42,6 @@ fn test_power_off_does_not_speculatively_run_zone_turn() {
         Instant::now(),
     );
     assert_eq!(result.next_state, FsmState::PreparingToStop);
-    // Headlamp context must be unchanged (no ResetForIgnitionOff applied).
     assert_eq!(
         result.modified_ctx.headlamp.state,
         ctx.headlamp.state,
@@ -52,16 +50,41 @@ fn test_power_off_does_not_speculatively_run_zone_turn() {
 }
 
 #[test]
-fn test_headlamp_replies_with_headlamp_ingress_is_the_only_non_default_constructor() {
+fn test_zone_replies_with_reply_is_non_default_constructor() {
+    // Phase 7: `with_reply` replaces the deleted `with_headlamp_ingress`.
     let embed = HeadlampZoneReply {
-        ctx: HeadlampContext {
-            state: HeadlampState::On,
-            ack_pending_since: None,
-        },
+        ctx: HeadlampContext { state: HeadlampState::On, ack_pending_since: None },
         outcomes: vec![],
     };
-    let r = ZoneReplies::with_headlamp_ingress(embed.clone());
-    assert_eq!(r.headlamp.ingress, Some(embed));
+    let r = ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(embed.clone()));
+    let got = r.get(&ZoneId::Headlamp).expect("must be present");
+    assert_eq!(got.as_headlamp(), Some(&embed));
+}
+
+// --- Phase 7 map-shape tests ---
+
+#[test]
+fn test_zone_replies_map_get_returns_none_for_absent_zone() {
+    let r = ZoneReplies::simulate_locally();
+    assert!(
+        r.get(&crate::fsm::ZoneId::Headlamp).is_none(),
+        "simulate_locally must return an empty map; get(Headlamp) must be None"
+    );
+}
+
+#[test]
+fn test_zone_replies_with_reply_stores_and_retrieves() {
+    use crate::vehicle_state::{HeadlampContext, HeadlampState, HeadlampZoneReply};
+    let embed = HeadlampZoneReply {
+        ctx: HeadlampContext { state: HeadlampState::On, ack_pending_since: None },
+        outcomes: vec![],
+    };
+    let r = ZoneReplies::with_reply(
+        crate::fsm::ZoneId::Headlamp,
+        crate::digital_twin::ZoneReply::Headlamp(embed.clone()),
+    );
+    let got = r.get(&crate::fsm::ZoneId::Headlamp).expect("must be present");
+    assert_eq!(got.as_headlamp(), Some(&embed));
 }
 
 // --- Original tests ---
@@ -84,7 +107,7 @@ fn given_headlamp_ingress_embed_when_commit_resolved_turn_then_uses_tell_back_no
         ResolvedTurn {
             ingress: FsmEvent::TimerTick,
             now: t0,
-            zone_replies: ZoneReplies::with_headlamp_ingress(embed),
+            zone_replies: ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(embed)),
         },
     );
 

@@ -200,6 +200,32 @@ pub enum DigitalTwinCarVocabulary {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ZoneReply {
     Headlamp(crate::vehicle_state::HeadlampZoneReply),
+    /// Phase-7 wiper zone reply.
+    Wiper(crate::vehicle_state::WiperZoneReply),
+}
+
+impl ZoneReply {
+    /// Borrow the inner [`HeadlampZoneReply`] if this is a headlamp reply.
+    pub fn as_headlamp(&self) -> Option<&crate::vehicle_state::HeadlampZoneReply> {
+        if let ZoneReply::Headlamp(r) = self { Some(r) } else { None }
+    }
+
+    /// Borrow the inner [`WiperZoneReply`] if this is a wiper reply.
+    pub fn as_wiper(&self) -> Option<&crate::vehicle_state::WiperZoneReply> {
+        if let ZoneReply::Wiper(r) = self { Some(r) } else { None }
+    }
+}
+
+/// Brain-to-zone routing envelope — symmetric counterpart of [`ZoneReply`].
+///
+/// `zone_message_for_event` produces this; [`crate::twin_runtime::turn_barrier::TurnBarrier`]
+/// stores it for retry; `tell_zone` dispatches it to the correct actor.
+///
+/// `pub(crate)` — not part of the external crate API.
+#[derive(Debug, Clone)]
+pub(crate) enum ZoneMessage {
+    Headlamp(crate::vehicle_state::HeadlampMessage),
+    Wiper(crate::vehicle_state::WiperMessage),
 }
 
 /// Zone-initiated event payload (ACK timeout, future assembly deadlines).

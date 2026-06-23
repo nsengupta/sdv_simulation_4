@@ -63,11 +63,14 @@ async fn given_low_lux_and_on_ack_when_get_status_then_ledger_headlamp_matches_e
         handle,
     };
 
-    // Phase 5: startup barrier drains automatically → Idle.  Drain two ledger rows:
-    // PowerOn (seq 1) and AssemblyZoneReady(Headlamp) (seq 2).
+    // Phase 7: startup barrier drains for BOTH assemblies.
+    //   row 1 = PowerOn → PreparingToStart
+    //   row 2 = AssemblyZoneReady(Headlamp) → PreparingToStart
+    //   row 3 = AssemblyZoneReady(Wiper) → Idle
     power_on_to_idle(&controller).await;
     let _power_on_record = rx.recv().await.expect("ledger row for power on");
-    let _assemblies_ready_record = rx.recv().await.expect("ledger row for assembly zone ready");
+    let _ = rx.recv().await.expect("ledger row for headlamp zone ready");
+    let _ = rx.recv().await.expect("ledger row for wiper zone ready → idle");
 
     controller
         .submit_physical_car_event(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::AmbientLux(
@@ -142,11 +145,14 @@ async fn given_power_on_only_when_get_status_then_ledger_headlamp_matches_embed(
         handle,
     };
 
-    // Phase 5: startup barrier fires automatically when headlamp replies ZoneReady.
-    // Drain two ledger rows: PowerOn (seq 1) + AssemblyZoneReady (seq 2).
+    // Phase 7: startup barrier drains for BOTH assemblies.
+    //   row 1 = PowerOn → PreparingToStart
+    //   row 2 = AssemblyZoneReady(Headlamp) → PreparingToStart
+    //   row 3 = AssemblyZoneReady(Wiper) → Idle
     power_on_to_idle(&controller).await;
     let _power_on_record = rx.recv().await.expect("ledger row for power on");
-    let assembly_ready_record = rx.recv().await.expect("ledger row for assembly zone ready");
+    let _ = rx.recv().await.expect("ledger row for headlamp zone ready");
+    let wiper_ready_record = rx.recv().await.expect("ledger row for wiper zone ready → idle");
     assert_eq!(_power_on_record.event, PublishedFsmEvent::PowerOn);
 
     let snapshot = actor_ref
@@ -158,10 +164,10 @@ async fn given_power_on_only_when_get_status_then_ledger_headlamp_matches_embed(
         .expect("GetStatus call")
         .expect("GetStatus reply");
 
-    // The latest ledger record (AssemblyZoneReady) carries the post-startup headlamp
-    // context, which should match the persisted snapshot after reaching Idle.
+    // The latest ledger record (AssemblyZoneReady(Wiper) → Idle) carries the post-startup
+    // headlamp context, which should match the persisted snapshot after reaching Idle.
     assert_published_headlamp_matches_runtime(
-        &assembly_ready_record.current_ctx.headlamp,
+        &wiper_ready_record.current_ctx.headlamp,
         &snapshot.context().headlamp,
     );
 }
