@@ -1,4 +1,5 @@
-use super::machineries::{FsmAction, FsmEvent, FsmState, Operational};
+use std::collections::BTreeSet;
+use super::machineries::{ALL_ASSEMBLIES, AssemblyId, FsmAction, FsmEvent, FsmState, Operational};
 use crate::vehicle_state::{HeadlampState, VehicleContext};
 use crate::vehicle_physics::{
     extreme_operation_active, speed_threshold_exceeded, EXTREME_OPERATION_WARNING_MESSAGE,
@@ -10,20 +11,20 @@ use std::time::{Duration, Instant};
 /// Operational mode transition table.
 ///
 /// Human table:
-/// - Off + PowerOn(healthy ctx) -> PreparingToStart  [initialises `ctx.pending_assemblies`]
-/// - PreparingToStart + AssemblyZoneReady(zone_id) -> Idle (last pending) / PreparingToStart (more pending)
-/// - PreparingToStart + anything else -> PreparingToStart (self-loop, no actions)
-/// - Idle + PowerOff -> PreparingToStop  [initialises `ctx.pending_assemblies`]
+/// - Off + PowerOn(healthy ctx) -> PreparingToStart({all assemblies})
+/// - PreparingToStart({a, ...}) + AssemblyZoneReady(a) -> PreparingToStart({...}) or Idle (when set empties)
+/// - PreparingToStart + anything else -> PreparingToStart (self-loop, set unchanged)
+/// - Idle + PowerOff -> PreparingToStop({all assemblies})
 /// - Idle + UpdateRpm(rpm > [`RPM_DRIVING_THRESHOLD`]) -> Driving
 /// - Driving + derived ctx.powertrain.speed_kph == 0 -> Idle (any event, after kinematic refresh in `step`)
 /// - Driving + speed > 160 km/h **or** (speed > 160 and RPM > 5500) -> ExtremeOperationWarning(now)
 /// - ExtremeOperationWarning + TimerTick + cooldown + all signals cleared -> Driving/Idle
-/// - PreparingToStop + AssemblyZoneReady(zone_id) -> Off (last pending) / PreparingToStop (more pending)
-/// - PreparingToStop + anything else -> PreparingToStop (self-loop, no actions)
+/// - PreparingToStop({a, ...}) + AssemblyZoneReady(a) -> PreparingToStop({...}) or Off (when set empties)
+/// - PreparingToStop + anything else -> PreparingToStop (self-loop, set unchanged)
 /// - Everything else -> stay in current state
 ///
-/// Note: `Internal(AssembliesReady)` / `Internal(AssembliesStopped)` remain in the vocabulary
-/// for observer/ledger use; they no longer appear on the primary startup/shutdown path.
+/// `VehicleContext` carries no separate `remaining_assemblies` field; the `BTreeSet` embedded
+/// in `PreparingToStart` / `PreparingToStop` is the sole authoritative countdown.
 ///
 /// # Purity
 ///
@@ -55,27 +56,31 @@ pub fn transition(
     match current_state {
         Off => match event {
             PowerOn if current_ctx.is_healthy() => {
-                TransitionResult { next_state: PreparingToStart, note: None }
+                TransitionResult {
+                    next_state: PreparingToStart(ALL_ASSEMBLIES.iter().copied().collect()),
+                    note: None,
+                }
             }
             PowerOff => TransitionResult { next_state: Off, note: Some(TransitionNote::RejectedPowerOff) },
             _ => TransitionResult { next_state: Off, note: None },
         },
-        PreparingToStart => match event {
-            AssemblyZoneReady(zone_id) => {
-                // `step` removes `zone_id` from `ctx.pending_assemblies` after this call.
-                // Peek at what the set will look like post-removal to decide the next state.
-                let remaining_after = current_ctx.pending_assemblies.len()
-                    - usize::from(current_ctx.pending_assemblies.contains(zone_id));
-                if remaining_after == 0 {
+        PreparingToStart(remaining) => match event {
+            AssemblyZoneReady(assembly_id) => {
+                let new_remaining: BTreeSet<AssemblyId> =
+                    remaining.iter().copied().filter(|a| a != assembly_id).collect();
+                if new_remaining.is_empty() {
                     TransitionResult { next_state: Idle, note: None }
                 } else {
-                    TransitionResult { next_state: PreparingToStart, note: None }
+                    TransitionResult { next_state: PreparingToStart(new_remaining), note: None }
                 }
             }
-            _ => TransitionResult { next_state: PreparingToStart, note: None },
+            _ => TransitionResult { next_state: PreparingToStart(remaining.clone()), note: None },
         },
         Idle => match event {
-            PowerOff => TransitionResult { next_state: PreparingToStop, note: None },
+            PowerOff => TransitionResult {
+                next_state: PreparingToStop(ALL_ASSEMBLIES.iter().copied().collect()),
+                note: None,
+            },
             UpdateRpm(rpm) if *rpm > RPM_DRIVING_THRESHOLD => {
                 TransitionResult { next_state: Driving, note: None }
             }
@@ -120,17 +125,17 @@ pub fn transition(
             PowerOff => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: Some(TransitionNote::RejectedPowerOff) },
             _ => TransitionResult { next_state: ExtremeOperationWarning(*began_at), note: None },
         },
-        PreparingToStop => match event {
-            AssemblyZoneReady(zone_id) => {
-                let remaining_after = current_ctx.pending_assemblies.len()
-                    - usize::from(current_ctx.pending_assemblies.contains(zone_id));
-                if remaining_after == 0 {
+        PreparingToStop(remaining) => match event {
+            AssemblyZoneReady(assembly_id) => {
+                let new_remaining: BTreeSet<AssemblyId> =
+                    remaining.iter().copied().filter(|a| a != assembly_id).collect();
+                if new_remaining.is_empty() {
                     TransitionResult { next_state: Off, note: None }
                 } else {
-                    TransitionResult { next_state: PreparingToStop, note: None }
+                    TransitionResult { next_state: PreparingToStop(new_remaining), note: None }
                 }
             }
-            _ => TransitionResult { next_state: PreparingToStop, note: None },
+            _ => TransitionResult { next_state: PreparingToStop(remaining.clone()), note: None },
         },
     }
 }
@@ -148,8 +153,12 @@ pub fn output(old_state: &FsmState, new_state: &FsmState, ctx: &VehicleContext) 
     use FsmState::*;
 
     match (old_state, new_state) {
-        (Off, PreparingToStart) => vec![StartAssemblies],
-        (Idle, PreparingToStop) => vec![StopAssemblies],
+        (Off, PreparingToStart(_)) => vec![StartAssemblies(ALL_ASSEMBLIES.to_vec())],
+        (Idle, PreparingToStop(_)) => vec![StopAssemblies(ALL_ASSEMBLIES.to_vec())],
+        // Intra-mode steps: an assembly acknowledged but peers are still pending.
+        // The FSM is still in the same mode; no domain event to publish.
+        (PreparingToStart(_), PreparingToStart(_)) => vec![],
+        (PreparingToStop(_), PreparingToStop(_)) => vec![],
         (Driving, DrivingDangerously) => vec![StartBuzzer],
         (DrivingDangerously, Driving) | (DrivingDangerously, Idle) => vec![StopBuzzer],
         (Driving, ExtremeOperationWarning(_)) => {

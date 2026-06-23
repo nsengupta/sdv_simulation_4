@@ -120,7 +120,7 @@ impl HeadlampActor {
         maybe_arm_ack_timer(myself, state);
         brain
             .send_message(DigitalTwinCarVocabulary::ZoneReady {
-                zone_id: crate::fsm::ZoneId::Headlamp,
+                zone_id: crate::fsm::AssemblyId::Headlamp,
                 turn_id,
                 tell_attempt,
                 reply: ZoneReply::Headlamp(zone_reply),
@@ -153,7 +153,7 @@ impl HeadlampActor {
         abort_ack_timer(&mut state.ack_timer);
         brain
             .send_message(DigitalTwinCarVocabulary::ZoneSpontaneous {
-                zone_id: crate::fsm::ZoneId::Headlamp,
+                zone_id: crate::fsm::AssemblyId::Headlamp,
                 event: ZoneSpontaneousEvent::Headlamp {
                     direction,
                     cause: FrontHeadlampIncompleteCause::TimedOut,

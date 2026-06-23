@@ -47,7 +47,7 @@ fn synthetic_unresponsive_embed_surfaces_log_warning_on_commit() {
             ingress: FsmEvent::TimerTick,
             now: t0,
             zone_replies: ZoneReplies::with_reply(
-                crate::fsm::ZoneId::Headlamp,
+                crate::fsm::AssemblyId::Headlamp,
                 crate::digital_twin::ZoneReply::Headlamp(synthetic),
             ),
         },
@@ -73,7 +73,7 @@ fn driving_ctx() -> crate::vehicle_state::VehicleContext {
 #[tokio::test]
 async fn given_silent_headlamp_when_headlamp_demux_event_then_ledger_records_unresponsive_warning() {
     use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
-    use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
+    use crate::fsm::{FsmEvent, FsmState, HeadlampState, AssemblyId};
     use crate::test::ActorGuard;
     use crate::twin_runtime::constants::{ZONE_TELL_BACK_ATTEMPT_COUNT, ZONE_TELL_BACK_WAIT};
     use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
@@ -106,7 +106,7 @@ async fn given_silent_headlamp_when_headlamp_demux_event_then_ledger_records_unr
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id: 2, // startup barrier is always turn 2 (PowerOn=1, StartAssemblies barrier=2)
             tell_attempt: 0,
             reply: ZoneReply::Headlamp(HeadlampZoneReply {

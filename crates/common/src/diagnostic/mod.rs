@@ -161,8 +161,8 @@ pub fn diag_state_transition(
                 format!(", speed = {speed} km/h, RPM = {rpm} (EXCEEDS safe limit — {cause})"),
             )
         }
-        FsmState::PreparingToStart => ("PreparingToStart", String::new()),
-        FsmState::PreparingToStop => ("PreparingToStop", String::new()),
+        FsmState::PreparingToStart { .. } => ("PreparingToStart", String::new()),
+        FsmState::PreparingToStop { .. } => ("PreparingToStop", String::new()),
     };
 
     DiagnosticMessage::info(

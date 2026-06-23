@@ -170,7 +170,7 @@ fn apply_external_hop(
     let recorded_actions: Vec<DomainAction> = result
         .actions
         .iter()
-        .filter(|action| !matches!(action, DomainAction::StartAssemblies | DomainAction::StopAssemblies))
+        .filter(|action| !matches!(action, DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_)))
         .cloned()
         .collect();
     result.transition_record.actions = recorded_actions;

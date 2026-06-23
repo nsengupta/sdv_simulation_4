@@ -8,11 +8,10 @@
 //! - `current_ctx` is the snapshot **after** zone_turn.
 //! - `modified_ctx` equals `current_ctx` on output (FSM does not mutate assemblies here).
 
-use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::vehicle_state::VehicleContext;
-use super::machineries::{DomainAction, FsmAction, FsmEvent, FsmState, ZoneId};
+use super::machineries::{DomainAction, FsmAction, FsmEvent, FsmState};
 use super::transition_map::{output, transition, TransitionNote};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,38 +39,18 @@ pub fn step(
     event: &FsmEvent,
     now: Instant,
 ) -> StepResult {
-    let mut modified_ctx = current_ctx.clone();
+    let modified_ctx = current_ctx.clone();
 
     let transition_result = transition(current_state, event, &modified_ctx, now);
     let next_state = transition_result.next_state.clone();
 
-    // FSM-owned context mutations for `pending_assemblies`.
-    // These do NOT touch assembly state (headlamp, powertrain, etc.) — only the
-    // lifecycle bookkeeping field that the transition table uses for counting.
-    match event {
-        FsmEvent::PowerOn
-            if *current_state == FsmState::Off && next_state == FsmState::PreparingToStart =>
-        {
-            // Phase 7: both managed assemblies must report ZoneReady before the FSM
-            // exits PreparingToStart.  Keep in sync with MANAGED_ASSEMBLIES.
-            modified_ctx.pending_assemblies =
-                BTreeSet::from([ZoneId::Headlamp, ZoneId::Wiper]);
-        }
-        FsmEvent::PowerOff
-            if *current_state == FsmState::Idle && next_state == FsmState::PreparingToStop =>
-        {
-            modified_ctx.pending_assemblies =
-                BTreeSet::from([ZoneId::Headlamp, ZoneId::Wiper]);
-        }
-        FsmEvent::AssemblyZoneReady(zone_id) => {
-            modified_ctx.pending_assemblies.remove(zone_id);
-        }
-        _ => {}
-    }
     let mut actions: Vec<DomainAction> = output(current_state, &next_state, &modified_ctx)
         .into_iter()
         .filter_map(map_fsm_action)
         .collect();
+
+    // No `remaining_assemblies` mutation needed: the countdown is now embedded inside
+    // `FsmState::PreparingToStart` / `PreparingToStop` and managed by `transition()`.
 
     if let Some(note) = &transition_result.note {
         match note {
@@ -92,7 +71,7 @@ pub fn step(
         .iter()
         .filter(|action| !matches!(
             action,
-            DomainAction::StartAssemblies | DomainAction::StopAssemblies
+            DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_)
         ))
         .cloned()
         .collect();
@@ -119,8 +98,8 @@ fn map_fsm_action(action: FsmAction) -> Option<DomainAction> {
         FsmAction::StopBuzzer => Some(DomainAction::StopBuzzer),
         FsmAction::PublishStateSync => Some(DomainAction::PublishStateSync),
         FsmAction::LogWarning(msg) => Some(DomainAction::LogWarning(msg)),
-        FsmAction::StartAssemblies => Some(DomainAction::StartAssemblies),
-        FsmAction::StopAssemblies => Some(DomainAction::StopAssemblies),
+        FsmAction::StartAssemblies(list) => Some(DomainAction::StartAssemblies(list)),
+        FsmAction::StopAssemblies(list) => Some(DomainAction::StopAssemblies(list)),
         FsmAction::None => None,
     }
 }

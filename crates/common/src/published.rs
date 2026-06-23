@@ -194,7 +194,7 @@ impl PublishedDomainAction {
             DomainAction::RequestFrontHeadlampOn => Some(Self::RequestFrontHeadlampOn),
             DomainAction::RequestFrontHeadlampOff => Some(Self::RequestFrontHeadlampOff),
             // Internal coordination signals: not domain intents, not ledger-visible.
-            DomainAction::StartAssemblies | DomainAction::StopAssemblies => None,
+            DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_) => None,
         }
     }
 }
@@ -314,14 +314,14 @@ impl SessionEpoch {
     fn fsm_state(&self, state: &FsmState) -> PublishedFsmState {
         match state {
             FsmState::Off => PublishedFsmState::Off,
-            FsmState::PreparingToStart => PublishedFsmState::PreparingToStart,
+            FsmState::PreparingToStart { .. } => PublishedFsmState::PreparingToStart,
             FsmState::Idle => PublishedFsmState::Idle,
             FsmState::Driving => PublishedFsmState::Driving,
             FsmState::DrivingDangerously => PublishedFsmState::DrivingDangerously,
             FsmState::ExtremeOperationWarning(at) => PublishedFsmState::ExtremeOperationWarning {
                 began_at_unix: self.project(*at),
             },
-            FsmState::PreparingToStop => PublishedFsmState::PreparingToStop,
+            FsmState::PreparingToStop { .. } => PublishedFsmState::PreparingToStop,
         }
     }
 

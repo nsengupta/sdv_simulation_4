@@ -5,7 +5,7 @@
 //!
 //! ## RED state
 //!
-//! All tests fail to compile until `ZoneId::Wiper`, `WiperMessage`, `WiperContext`,
+//! All tests fail to compile until `AssemblyId::Wiper`, `WiperMessage`, `WiperContext`,
 //! `WiperState`, `FsmEvent::RainsStarted/RainsStopped`, and `ZoneMessage::Wiper` exist.
 //! Actor tests additionally require `test_silent_wiper` in `VehicleControllerRuntimeOptions`
 //! and the `WiperActor` wired into `VirtualCarRuntimeState`.
@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneMessage, ZoneReply};
-use crate::fsm::{FsmEvent, FsmState, ZoneId};
+use crate::fsm::{FsmEvent, FsmState, AssemblyId};
 use crate::test::ActorGuard;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::twin_runtime::zone_turn::zone_message_for_event;
@@ -66,7 +66,7 @@ fn inject_wiper_zone_ready(controller: &VehicleController, turn_id: u64) {
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Wiper,
+            zone_id: AssemblyId::Wiper,
             turn_id,
             tell_attempt: 0,
             reply: ZoneReply::Wiper(WiperZoneReply {
@@ -82,7 +82,7 @@ fn inject_headlamp_zone_ready_startup(controller: &VehicleController) {
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id: HEADLAMP_STARTUP_TURN,
             tell_attempt: 0,
             reply: ZoneReply::Headlamp(HeadlampZoneReply {
@@ -188,12 +188,12 @@ async fn boot_silent_both(
     drain_n(rx, 3, Duration::from_secs(3)).await;
 }
 
-// ── Test 1: ZoneId::Wiper is distinct ─────────────────────────────────────────
+// ── Test 1: AssemblyId::Wiper is distinct ─────────────────────────────────────────
 
 #[test]
 fn test_wiper_zone_id_exists_and_is_distinct_from_headlamp() {
-    let headlamp = ZoneId::Headlamp;
-    let wiper = ZoneId::Wiper;
+    let headlamp = AssemblyId::Headlamp;
+    let wiper = AssemblyId::Wiper;
     assert_ne!(headlamp, wiper);
     assert_eq!(format!("{headlamp:?}"), "Headlamp");
     assert_eq!(format!("{wiper:?}"), "Wiper");
@@ -206,7 +206,7 @@ fn test_rains_started_routes_to_wiper_zone() {
     let result = zone_message_for_event(&FsmEvent::RainsStarted, &FsmState::Driving);
     match result {
         Some((zone_id, ZoneMessage::Wiper(WiperMessage::Start))) => {
-            assert_eq!(zone_id, ZoneId::Wiper);
+            assert_eq!(zone_id, AssemblyId::Wiper);
         }
         other => panic!("expected Some((Wiper, Wiper(Start))), got {other:?}"),
     }
@@ -216,7 +216,7 @@ fn test_rains_started_routes_to_wiper_zone() {
 
 #[test]
 fn test_rains_started_suppressed_during_preparing_to_start() {
-    let result = zone_message_for_event(&FsmEvent::RainsStarted, &FsmState::PreparingToStart);
+    let result = zone_message_for_event(&FsmEvent::RainsStarted, &FsmState::PreparingToStart(std::collections::BTreeSet::new()));
     assert!(result.is_none(), "expected None during PreparingToStart, got {result:?}");
 }
 
@@ -329,7 +329,7 @@ async fn test_concurrent_headlamp_and_wiper_events_commit_in_arrival_order() {
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id: FIRST_USER_TURN,
             tell_attempt: 0,
             reply: ZoneReply::Headlamp(HeadlampZoneReply {

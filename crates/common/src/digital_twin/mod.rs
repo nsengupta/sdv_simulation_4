@@ -174,7 +174,7 @@ pub enum DigitalTwinCarVocabulary {
     Fsm(FsmEvent),
     /// Zone twinlet tell-back after applying one message.
     ZoneReady {
-        zone_id: crate::fsm::ZoneId,
+        zone_id: crate::fsm::AssemblyId,
         turn_id: u64,
         /// Matches the `tell_attempt` on the tell that produced this reply (retry correlation).
         tell_attempt: u32,
@@ -182,12 +182,12 @@ pub enum DigitalTwinCarVocabulary {
     },
     /// Zone-initiated hop (ACK timer, future assembly deadlines) — not correlated to a brain `turn_id`.
     ZoneSpontaneous {
-        zone_id: crate::fsm::ZoneId,
+        zone_id: crate::fsm::AssemblyId,
         event: ZoneSpontaneousEvent,
     },
     /// Ractor deadline: zone twinlet did not tell-back in [`crate::twin_runtime::constants::ZONE_TELL_BACK_WAIT`].
     ZoneTellBackTimeout {
-        zone_id: crate::fsm::ZoneId,
+        zone_id: crate::fsm::AssemblyId,
         turn_id: u64,
         tell_attempt: u32,
     },

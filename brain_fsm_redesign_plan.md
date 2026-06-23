@@ -353,6 +353,177 @@ Phase 8 eliminates `MANAGED_ASSEMBLIES` from the actor, not `pending_assemblies`
 
 ---
 
+## Phase 9 — FSM State Owns the Countdown (`BTreeSet` replaces `remaining_assemblies`)
+
+**Status: COMPLETED (2026-06-23, same session as Phase 8).**  
+**Depends on:** Phase 8 complete (`AssemblyId` rename; `ALL_ASSEMBLIES`; struct variants; 179 tests green).  
+**Implemented as a Phase 8 refinement:** During Phase 8 review, a "temporal mismatch" was identified in
+`transition_map.rs` — `transition()` had to peek ahead into a future value of
+`ctx.remaining_assemblies` because the actual mutation happened later in `step.rs`.  The fix
+merged the countdown directly into the FSM state.
+
+### What Phase 9 changes
+
+| Before (Phase 8 design) | After (Phase 9 — final state) |
+|---|---|
+| `PreparingToStart { assemblies: &'static [AssemblyId] }` — static slice, reset to `ALL_ASSEMBLIES` on every self-loop | `PreparingToStart(BTreeSet<AssemblyId>)` — owned shrinking set; each `AssemblyZoneReady` removes one entry |
+| `VehicleContext::remaining_assemblies: BTreeSet<AssemblyId>` — parallel countdown in context | **Deleted** — the state's inner `BTreeSet` is the sole authoritative countdown |
+| `step.rs` mutation block: reads from `DomainAction::StartAssemblies` to init `ctx.remaining_assemblies`; `AssemblyZoneReady` removes from `ctx` | **Deleted** — `step.rs` performs zero countdown mutations |
+| `transition()` peek-ahead: subtracts 1 from `ctx.remaining_assemblies.len()` to decide next state | **Deleted** — reads `remaining.is_empty()` directly from the state's own `BTreeSet` |
+| `DomainAction::StartAssemblies(&'static [AssemblyId])` | `DomainAction::StartAssemblies(Vec<AssemblyId>)` — owned, not a static borrow |
+| `output()` catch-all `if old != new` fired on every intra-mode step | Explicit `(PreparingToStart(_), PreparingToStart(_)) => vec![]` guard added before catch-all |
+
+### Key design rationale
+
+`FsmState` is now the complete machine state — no external bookkeeping is needed.
+`transition()` is a fully self-contained pure function: it reads the remaining set from the
+current state, produces a filtered copy as the next state, and checks `is_empty()` to decide
+whether to cross to `Idle` / `Off`.  `VehicleContext` carries only assembly-domain state
+(sensors, actuators) — no FSM lifecycle bookkeeping.
+
+### RED tests written / updated
+
+All tests in `fsm_preparation_contract.rs` and `fsm_engine_contract.rs` that previously
+asserted `ctx.remaining_assemblies` were rewritten to assert the inner `BTreeSet` of the
+`PreparingToStart` / `PreparingToStop` state variant directly.  Five new Phase 9 tests added:
+
+| Test | Asserts |
+|---|---|
+| `test_preparing_to_start_carries_assembly_ids` | `PreparingToStart(remaining)` contains both `Headlamp` and `Wiper` after `PowerOn` |
+| `test_preparing_to_stop_carries_assembly_ids` | Same for `PreparingToStop` after `PowerOff` |
+| `test_state_and_action_agree_on_assembly_set` | The state's inner set and `StartAssemblies` action payload name the same assemblies |
+| `test_assembly_zone_ready_shrinks_state_not_context` | After Headlamp acks, state is `PreparingToStart({Wiper})`; `VehicleContext` untouched |
+| `test_start_assemblies_action_carries_assembly_list` | `StartAssemblies(Vec<AssemblyId>)` payload contains both assemblies |
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `crates/common/src/fsm/machineries.rs` | Variant type changed to `(BTreeSet<AssemblyId>)`; action payload changed to `Vec<AssemblyId>`; `BTreeSet` import added |
+| `crates/common/src/fsm/transition_map.rs` | `transition()` rewrites: filter BTreeSet from state; `output()` intra-mode guards added |
+| `crates/common/src/fsm/step.rs` | Mutation block deleted; `let mut modified_ctx` → `let modified_ctx` |
+| `crates/common/src/vehicle_state/mod.rs` | `remaining_assemblies` field deleted; `BTreeSet` import removed |
+| `crates/common/src/twin_runtime/zone_turn.rs` | Pattern updated: `PreparingToStart { .. }` → `PreparingToStart(_)` |
+| `crates/common/src/test/fsm_preparation_contract.rs` | Full rewrite: struct-variant assertions → tuple-variant; `ctx.remaining_assemblies` → state inner set |
+| `crates/common/src/test/fsm_engine_contract.rs` | `ctx.remaining_assemblies` blocks replaced with direct state construction |
+| `crates/common/src/test/fsm_step_contract.rs` | Struct-variant pattern in RED test fixed |
+| `crates/common/src/test/wiper_zone_contract.rs` | Struct-variant pattern fixed |
+
+### Discussion checkpoint after Phase 9
+
+1. `cargo test` — 179 tests green, zero warnings across all crates. ✅
+2. `rg "remaining_assemblies" --type rust` → zero. ✅
+3. `rg "PreparingToStart {" --type rust` → zero (all usages are tuple-variant). ✅
+4. Confirm: `transition()` has no reference to `VehicleContext` fields other than `is_healthy()`,
+   `powertrain`, and `visibility` — it reads all countdown state from `FsmState` directly.
+5. **Data structure revisit (deferred):** If the FSM is ever ported to a bare-metal ECU
+   (no allocator), `BTreeSet<AssemblyId>` should be replaced with
+   `arrayvec::ArrayVec<AssemblyId, MAX_ASSEMBLIES>`.  That is a two-line change in
+   `machineries.rs`; no logic elsewhere changes.  See `brain_fsm_redesign_impl_Phase_8.md`
+   "Revisit" section for the full trade-off analysis.
+6. **Documentation debt:** `brain_fsm_redesign_impl_Phase_8.md` was written as a plan and
+   describes the superseded `&'static [AssemblyId]` design.  Before README / blog compilation
+   it must be updated to reflect the final Phase 9 state.
+
+---
+
+## Phase 10 — Documentation Consolidation and Remaining simulation-4 Objectives
+
+**Status: PENDING (next iteration).**  
+**Depends on:** Phases 1–9 complete; 179 tests green; all deprecated symbols zero.
+
+### Scope
+
+Phase 10 is not a single architectural change but a collection of deferred items that are
+independent of each other and can be done in any order.  Each item is small enough to be
+a standalone PR.
+
+### Item A — Update `brain_fsm_redesign_impl_Phase_8.md` *(documentation)*
+
+The Phase 8 implementation doc was written as a plan and still contains the superseded
+`&'static [AssemblyId]` design as if it were the final state.  Update every code snippet
+and description to match what was actually built (the intermediate design), and cross-link
+clearly to Phase 9 as the resolution.
+
+**Done:** Header and Discussion checkpoint updated in the commit that introduced Phase 9.
+Remaining: update code snippets inside D2, D4, Step 3, Step 5 to note they are intermediate.
+
+---
+
+### Item B — README and blog compilation *(documentation)*
+
+Compile the staged design story (Phases 1–9) into:
+- `README.md` — architecture overview, FSM state machine diagram, assembly topology
+- `blog/draft.md` — narrative walkthrough of the redesign journey
+
+Source material: `brain_fsm_redesign_plan.md`, `brain_fsm_redesign_impl_Phase_{2..9}.md`,
+`findings/`, `diagrams/`.
+
+---
+
+### Item C — CAN emulation for `PowerOn` / `PowerOff` *(feature)*
+
+CAN frame ID `0x100`:
+- Payload `01 00 00 00 00 00 00 00` → `FsmEvent::PowerOn`
+- Payload `00 00 00 00 00 00 00 00` → `FsmEvent::PowerOff`
+
+A `can_emulator` module (or actor) that maps raw frames to FSM events and forwards them to
+`VirtualCarActor`.  See `analysis_4_response.md` Stage 1 for the original design sketch.
+
+---
+
+### Item D — Non-blocking actuation *(refactor)*
+
+`actuation_manager.execute()` is currently `.await`-ed directly inside `virtual_car_actor.rs`,
+holding the actor's thread during CAN transmission.  Move actuation into the `HeadlampActor`'s
+own thread so `VirtualCarActor` does not block.
+
+See `findings/single-thread-guarantee.md` Category 2 and `analysis_4_response.md` Stage 5.
+
+---
+
+### Item E — Code commenting pass *(quality)*
+
+Systematic doc-comment pass over the core call tree:
+`begin_fsm_turn` → `zone_message_for_event` → `TurnBarrier` drain loop → `apply_committed_quiescence`.
+Each public and `pub(crate)` function must have a doc comment explaining its invariants and
+relationship to adjacent functions.
+
+See `findings/Code-commenting-plan.md`.
+
+---
+
+### Item F — Actor-level fuzz / steady-state tests *(quality)*
+
+`fsm_properties.rs` covers FSM-level random event sequences via `proptest`.
+Missing: actor-level tests that spawn `VirtualCarActor`, fire random `ractor` messages
+(including `Fsm(...)`, `ZoneReady`, `ZoneTellBackTimeout`), and assert:
+- The actor never panics.
+- `barrier_queue` drains to empty within a bounded number of events.
+- The final FSM state is a valid steady state (`Off`, `Idle`, `Driving`, etc.).
+
+See `analysis_4_response.md` Stage 6.
+
+---
+
+### Item G — Embedded readiness: `ArrayVec` migration *(optional)*
+
+If the FSM is ported to a bare-metal ECU (no allocator), replace `BTreeSet<AssemblyId>`
+in `FsmState::PreparingToStart` / `PreparingToStop` with
+`arrayvec::ArrayVec<AssemblyId, MAX_ASSEMBLIES>`.  This is a two-line change in
+`machineries.rs`; no logic elsewhere changes.
+
+See `brain_fsm_redesign_impl_Phase_8.md` "Revisit" section.
+
+### Discussion checkpoint after Phase 10
+
+1. `README.md` accurately describes the Phase 9 final design.
+2. `cargo test` still 179+ tests green (no regressions from Item D refactor).
+3. `rg "actuation_manager.execute" --type rust` shows zero calls in `virtual_car_actor.rs`.
+4. `cargo doc --no-deps -p common` emits zero "missing documentation" warnings for `pub` items.
+
+---
+
 ## File Change Summary by Phase
 
 | Phase | Files Changed | Files Added |
@@ -365,5 +536,7 @@ Phase 8 eliminates `MANAGED_ASSEMBLIES` from the actor, not `pending_assemblies`
 | 6 | `twin_runtime/zone_turn.rs`, `twin_runtime/twin_turn.rs`, `twin_runtime/zone_replies.rs`, `twin_runtime/controller/virtual_car_actor.rs`, `fsm/machineries.rs` | — |
 | 7 | `fsm/machineries.rs`, `twin_runtime/zone_turn.rs`, `twin_runtime/zone_replies.rs`, `twin_runtime/controller/virtual_car_actor.rs` | `twin_runtime/wiper_actor.rs`, `test/wiper_zone_contract.rs` |
 | 8 | `fsm/machineries.rs`, `fsm/transition_map.rs`, `twin_runtime/controller/virtual_car_actor.rs` | — |
+| 9 | `fsm/machineries.rs`, `fsm/transition_map.rs`, `fsm/step.rs`, `vehicle_state/mod.rs`, `twin_runtime/zone_turn.rs`, `test/fsm_preparation_contract.rs`, `test/fsm_engine_contract.rs`, `test/fsm_step_contract.rs`, `test/wiper_zone_contract.rs` | — |
+| 10 | `README.md`, `virtual_car_actor.rs` (actuation), new `can_emulator` module | `brain_fsm_redesign_impl_Phase_10.md` |
 
 All paths are relative to `crates/common/src/`.

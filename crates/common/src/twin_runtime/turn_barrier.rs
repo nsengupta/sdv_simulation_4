@@ -27,7 +27,7 @@ use ractor::concurrency::JoinHandle;
 use ractor::MessagingErr;
 
 use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneMessage, ZoneReply};
-use crate::fsm::{FsmEvent, ZoneId};
+use crate::fsm::{AssemblyId, FsmEvent};
 use crate::twin_runtime::twin_turn::ResolvedTurn;
 use crate::twin_runtime::zone_replies::ZoneReplies;
 use crate::twin_runtime::zone_tell_back::TellBackWait;
@@ -69,20 +69,19 @@ pub(crate) struct TurnBarrier {
     now: Instant,
 
     /// Zones for which a reply has been requested but not yet received.
-    /// `BTreeSet` gives deterministic iteration order across zones (important for
-    /// future multi-zone turns where Phase 7 adds more assemblies).
-    pending: BTreeSet<ZoneId>,
-    /// Correlation state per zone: `tell_attempt` advances on each retry so that
+    /// `BTreeSet` gives deterministic iteration order across assemblies.
+    pending: BTreeSet<AssemblyId>,
+    /// Correlation state per assembly: `tell_attempt` advances on each retry so that
     /// late-arriving replies from a superseded attempt are discarded as stale.
-    zone_waits: HashMap<ZoneId, TellBackWait>,
+    zone_waits: HashMap<AssemblyId, TellBackWait>,
     /// Live timer handles; `abort()` is called when a real reply arrives first,
     /// preventing a spurious `ZoneTellBackTimeout` from firing afterwards.
-    zone_timers: HashMap<ZoneId, TellBackTimer>,
-    /// Zone replies collected so far; handed to `into_resolved_turn` for commit.
-    zone_replies: HashMap<ZoneId, ZoneReply>,
-    /// Original zone message per zone, kept so the correct payload is re-sent on
+    zone_timers: HashMap<AssemblyId, TellBackTimer>,
+    /// Assembly replies collected so far; handed to `into_resolved_turn` for commit.
+    zone_replies: HashMap<AssemblyId, ZoneReply>,
+    /// Original zone message per assembly, kept so the correct payload is re-sent on
     /// each retry without the actor having to reconstruct it from the event.
-    zone_messages: HashMap<ZoneId, ZoneMessage>,
+    zone_messages: HashMap<AssemblyId, ZoneMessage>,
 }
 
 impl TurnBarrier {
@@ -102,20 +101,18 @@ impl TurnBarrier {
 
     /// Create a barrier for one assembly zone's lifecycle tell (`BecomeOn` / `BecomeOff`).
     ///
-    /// Encapsulates the Phase 5 coupling: `zone_id` names both the pending slot and
-    /// the `AssemblyZoneReady(zone_id)` event committed when the barrier drains.
-    /// This keeps the two uses of `zone_id` in one place rather than duplicating them
-    /// at every call site (Q3 resolution).
+    /// `assembly_id` names both the pending slot and the `AssemblyZoneReady(assembly_id)`
+    /// event committed when the barrier drains.
     pub fn new_for_assembly_zone(
         turn_id: u64,
-        zone_id: ZoneId,
+        assembly_id: AssemblyId,
         message: ZoneMessage,
         wait: TellBackWait,
         timer: TellBackTimer,
         now: Instant,
     ) -> Self {
-        let mut barrier = Self::new(turn_id, FsmEvent::AssemblyZoneReady(zone_id), now);
-        barrier.add_pending_zone(zone_id, message, wait, timer);
+        let mut barrier = Self::new(turn_id, FsmEvent::AssemblyZoneReady(assembly_id), now);
+        barrier.add_pending_zone(assembly_id, message, wait, timer);
         barrier
     }
 
@@ -138,50 +135,50 @@ impl TurnBarrier {
         self.pending.is_empty()
     }
 
-    /// Whether the stored `tell_attempt` for `zone_id` matches the incoming attempt number.
+    /// Whether the stored `tell_attempt` for `assembly_id` matches the incoming attempt number.
     /// Used in `on_zone_ready` and `on_zone_timeout` to discard stale / mismatched messages.
-    pub fn tell_attempt_matches(&self, zone_id: ZoneId, tell_attempt: u32) -> bool {
+    pub fn tell_attempt_matches(&self, assembly_id: AssemblyId, tell_attempt: u32) -> bool {
         self.zone_waits
-            .get(&zone_id)
+            .get(&assembly_id)
             .map_or(false, |w| w.tell_attempt == tell_attempt)
     }
 
-    /// The original zone message stored for `zone_id`; needed to re-tell on timeout retry.
+    /// The original zone message stored for `assembly_id`; needed to re-tell on timeout retry.
     ///
     /// Returns a cloned value so callers do not need lifetime annotations.
     /// `ZoneMessage: Clone` (not `Copy`) — cloning is cheap (no heap data).
-    pub fn zone_message(&self, zone_id: ZoneId) -> Option<ZoneMessage> {
-        self.zone_messages.get(&zone_id).cloned()
+    pub fn zone_message(&self, assembly_id: AssemblyId) -> Option<ZoneMessage> {
+        self.zone_messages.get(&assembly_id).cloned()
     }
 
     // ── mutation ─────────────────────────────────────────────────────────────
 
-    /// Register one zone as pending.  Called once per zone in `begin_fsm_turn`.
+    /// Register one assembly as pending.  Called once per assembly in `begin_fsm_turn`.
     /// Stores the message for retry, the correlation wait, and the live timer handle.
     pub fn add_pending_zone(
         &mut self,
-        zone_id: ZoneId,
+        assembly_id: AssemblyId,
         message: ZoneMessage,
         wait: TellBackWait,
         timer: TellBackTimer,
     ) {
-        self.pending.insert(zone_id);
-        self.zone_messages.insert(zone_id, message);
-        self.zone_waits.insert(zone_id, wait);
-        self.zone_timers.insert(zone_id, timer);
+        self.pending.insert(assembly_id);
+        self.zone_messages.insert(assembly_id, message);
+        self.zone_waits.insert(assembly_id, wait);
+        self.zone_timers.insert(assembly_id, timer);
     }
 
     /// Store a fresh timer handle after a retry.  Does NOT abort the old one (already spent).
-    pub fn store_retry_timer(&mut self, zone_id: ZoneId, timer: TellBackTimer) {
-        self.zone_timers.insert(zone_id, timer);
+    pub fn store_retry_timer(&mut self, assembly_id: AssemblyId, timer: TellBackTimer) {
+        self.zone_timers.insert(assembly_id, timer);
     }
 
-    /// Apply a received zone reply: remove from `pending`, store the reply, abort the live timer.
-    pub fn act_on_zone_reply(&mut self, zone_id: ZoneId, reply: ZoneReply) {
-        self.pending.remove(&zone_id);
-        self.zone_replies.insert(zone_id, reply);
+    /// Apply a received assembly reply: remove from `pending`, store the reply, abort the live timer.
+    pub fn act_on_zone_reply(&mut self, assembly_id: AssemblyId, reply: ZoneReply) {
+        self.pending.remove(&assembly_id);
+        self.zone_replies.insert(assembly_id, reply);
         // Timer is still live → must abort to prevent a spurious ZoneTellBackTimeout.
-        if let Some(timer) = self.zone_timers.remove(&zone_id) {
+        if let Some(timer) = self.zone_timers.remove(&assembly_id) {
             timer.abort();
         }
     }
@@ -195,12 +192,12 @@ impl TurnBarrier {
     ///
     /// On `Retry`: caller must re-tell and call `store_retry_timer`.
     /// On `GaveUp`: caller must synthesise a reply and call `act_on_zone_reply`.
-    pub fn act_on_zone_timeout(&mut self, zone_id: ZoneId, tell_attempt: u32) -> TimeoutOutcome {
+    pub fn act_on_zone_timeout(&mut self, assembly_id: AssemblyId, tell_attempt: u32) -> TimeoutOutcome {
         // Timer has already fired — drop the stale handle, no abort() needed.
-        let _ = self.zone_timers.remove(&zone_id);
+        let _ = self.zone_timers.remove(&assembly_id);
 
-        let Some(wait) = self.zone_waits.get_mut(&zone_id) else {
-            // No wait state means this zone was already resolved; treat as give-up.
+        let Some(wait) = self.zone_waits.get_mut(&assembly_id) else {
+            // No wait state means this assembly was already resolved; treat as give-up.
             return TimeoutOutcome::GaveUp;
         };
 
@@ -232,7 +229,7 @@ impl TurnBarrier {
     /// Called only after `is_complete()` returns `true` so that all zone replies
     /// are guaranteed to be present (either real or synthetic).
     ///
-    /// D6: `zone_replies: HashMap<ZoneId, ZoneReply>` and `ZoneReplies::replies` share the
+    /// `zone_replies: HashMap<AssemblyId, ZoneReply>` and `ZoneReplies::replies` share the
     /// same type — the map is moved directly, zero re-allocation.
     pub fn into_resolved_turn(self) -> ResolvedTurn {
         ResolvedTurn {

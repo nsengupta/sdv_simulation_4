@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
-use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
+use crate::fsm::{FsmEvent, FsmState, HeadlampState, AssemblyId};
 use crate::published::{PublishedDomainAction, PublishedTransitionRecord};
 use crate::test::ActorGuard;
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
@@ -85,7 +85,7 @@ fn inject_zone_ready(controller: &VehicleController, turn_id: u64, state: Headla
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id,
             tell_attempt: 0,
             reply: zone_reply(state),
@@ -97,7 +97,7 @@ fn inject_timeout(controller: &VehicleController, turn_id: u64, attempt: u32) {
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneTellBackTimeout {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id,
             tell_attempt: attempt,
         })
@@ -134,11 +134,11 @@ async fn spawn_silent(
     (controller, rx, guard)
 }
 
-/// Turn ID allocated for the headlamp startup barrier (first in MANAGED_ASSEMBLIES).
+/// Turn ID allocated for the headlamp startup barrier (first in ALL_ASSEMBLIES).
 ///   PowerOn → turn 1 (passthrough), headlamp startup → turn 2.
 const STARTUP_BARRIER_TURN: u64 = 2;
 
-/// Turn ID allocated for the wiper startup barrier (second in MANAGED_ASSEMBLIES).
+/// Turn ID allocated for the wiper startup barrier (second in ALL_ASSEMBLIES).
 ///   Phase 7: wiper startup → turn 3.
 const WIPER_STARTUP_BARRIER_TURN: u64 = 3;
 

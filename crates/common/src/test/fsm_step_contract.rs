@@ -1,7 +1,7 @@
 //! Unit tests for the FSM step contract (`step`).
 
 use crate::digital_twin::{verify_state_laws, DigitalTwinCar, DigitalTwinCarError};
-use crate::fsm::{DomainAction, FsmEvent, FsmState, ZoneId};
+use crate::fsm::{DomainAction, FsmEvent, FsmState, AssemblyId};
 use crate::twin_runtime::twin_turn;
 use crate::vehicle_state::VehicleContext;
 
@@ -65,7 +65,7 @@ fn test_transition_record_carries_intended_actions_without_assembly_signals() {
 
     // The execution feed keeps StartAssemblies (the actor creates assembly barriers from it).
     assert!(
-        result.actions.iter().any(|a| matches!(a, DomainAction::StartAssemblies)),
+        result.actions.iter().any(|a| matches!(a, DomainAction::StartAssemblies(_))),
         "StartAssemblies must be in the execution feed; got: {:?}",
         result.actions
     );
@@ -73,7 +73,7 @@ fn test_transition_record_carries_intended_actions_without_assembly_signals() {
     // The ledger projection records genuine domain intents but drops StartAssemblies.
     let recorded = &result.transition_record.actions;
     assert!(
-        recorded.iter().all(|a| !matches!(a, DomainAction::StartAssemblies)),
+        recorded.iter().all(|a| !matches!(a, DomainAction::StartAssemblies(_))),
         "StartAssemblies must NOT appear in the ledger record; got: {:?}",
         recorded
     );
@@ -82,7 +82,7 @@ fn test_transition_record_carries_intended_actions_without_assembly_signals() {
     let expected: Vec<DomainAction> = result
         .actions
         .iter()
-        .filter(|a| !matches!(a, DomainAction::StartAssemblies | DomainAction::StopAssemblies))
+        .filter(|a| !matches!(a, DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_)))
         .cloned()
         .collect();
     assert_eq!(recorded, &expected);
@@ -117,26 +117,24 @@ fn test_step_standard_commute_flow() {
     let mut car = DigitalTwinCar::new("NASHIK-VC-001", FsmState::Off, valid_twin_context())
         .expect("non-blank identity");
 
-    let sequence: Vec<(FsmEvent, FsmState)> = vec![
-        (FsmEvent::PowerOn, FsmState::PreparingToStart),
-        // Phase 7: TWO assemblies pending; each AssemblyZoneReady removes one.
-        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::PreparingToStart),
-        (FsmEvent::AssemblyZoneReady(ZoneId::Wiper), FsmState::Idle),
-        (FsmEvent::UpdateRpm(1500), FsmState::Driving),
-        (FsmEvent::UpdateRpm(1300), FsmState::Driving),
-        (FsmEvent::UpdateRpm(0), FsmState::Idle),
-        (FsmEvent::PowerOff, FsmState::PreparingToStop),
-        // Phase 7: TWO assemblies pending; each AssemblyZoneReady removes one.
-        (FsmEvent::AssemblyZoneReady(ZoneId::Headlamp), FsmState::PreparingToStop),
-        (FsmEvent::AssemblyZoneReady(ZoneId::Wiper), FsmState::Off),
+    // Phase 8: PreparingToStart/Stop are now struct variants carrying assembly IDs.
+    // Equality checks use matches! with { .. } wildcards.
+    let sequence: &[(FsmEvent, fn(&FsmState) -> bool)] = &[
+        (FsmEvent::PowerOn,                                     |s| matches!(s, FsmState::PreparingToStart { .. })),
+        (FsmEvent::AssemblyZoneReady(AssemblyId::Headlamp),     |s| matches!(s, FsmState::PreparingToStart { .. })),
+        (FsmEvent::AssemblyZoneReady(AssemblyId::Wiper),        |s| matches!(s, FsmState::Idle)),
+        (FsmEvent::UpdateRpm(1500),                             |s| matches!(s, FsmState::Driving)),
+        (FsmEvent::UpdateRpm(1300),                             |s| matches!(s, FsmState::Driving)),
+        (FsmEvent::UpdateRpm(0),                                |s| matches!(s, FsmState::Idle)),
+        (FsmEvent::PowerOff,                                    |s| matches!(s, FsmState::PreparingToStop { .. })),
+        (FsmEvent::AssemblyZoneReady(AssemblyId::Headlamp),     |s| matches!(s, FsmState::PreparingToStop { .. })),
+        (FsmEvent::AssemblyZoneReady(AssemblyId::Wiper),        |s| matches!(s, FsmState::Off)),
     ];
 
-    for (event, expected_state) in sequence {
-        // Use accumulated car context for all events; PowerOn/PowerOff set pending_assemblies
-        // correctly in step.rs, so no manual override is needed.
-        let result = twin_turn(car.current_state(), car.context(), &event, Instant::now());
+    for (event, check) in sequence {
+        let result = twin_turn(car.current_state(), car.context(), event, Instant::now());
         car.apply_step(result.next_state, result.modified_ctx);
-        assert_eq!(*car.current_state(), expected_state, "event={event:?}");
+        assert!(check(car.current_state()), "event={event:?}, got {:?}", car.current_state());
     }
 }
 
@@ -150,12 +148,12 @@ fn test_state_laws_hold_over_a_legal_journey_and_records_carry_intents() {
     let mut ctx = valid_twin_context();
     let mut reached_warning = false;
 
-    // Phase 7: PowerOn bridges via PreparingToStart before Idle.
-    // step() initialises pending_assemblies={Headlamp, Wiper}; both barriers must drain.
+    // Phase 8: PowerOn bridges via PreparingToStart before Idle.
+    // step() initialises remaining_assemblies={Headlamp, Wiper}; both barriers must drain.
     for event in [
         FsmEvent::PowerOn,
-        FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
-        FsmEvent::AssemblyZoneReady(ZoneId::Wiper),
+        FsmEvent::AssemblyZoneReady(AssemblyId::Headlamp),
+        FsmEvent::AssemblyZoneReady(AssemblyId::Wiper),
         FsmEvent::UpdateRpm(1500),
         FsmEvent::UpdateRpm(5600),
     ] {
@@ -247,4 +245,23 @@ fn test_step_warning_recovery_on_tick_uses_passed_time() {
     );
     assert_eq!(recovered.next_state, FsmState::Driving);
     assert!(recovered.actions.contains(&DomainAction::StopBuzzer));
+}
+
+// ── Phase 8 RED test ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_step_standard_commute_uses_state_embedded_assemblies() {
+    // After PowerOn, the produced PreparingToStart state must embed a non-empty
+    // assemblies slice — the FSM is the queryable source of coordinator topology.
+    let result = twin_turn(
+        &FsmState::Off,
+        &valid_twin_context(),
+        &FsmEvent::PowerOn,
+        Instant::now(),
+    );
+    assert!(
+        matches!(&result.next_state, FsmState::PreparingToStart(s) if !s.is_empty()),
+        "PreparingToStart must embed a non-empty assembly set; got {:?}",
+        result.next_state
+    );
 }

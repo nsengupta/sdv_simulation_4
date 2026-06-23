@@ -123,7 +123,7 @@ impl ActuationManager for DefaultActuationManager {
             // StartAssemblies / StopAssemblies are intercepted by `apply_committed_quiescence`
             // in `virtual_car_actor.rs` before they reach the actuation manager, so this arm
             // is unreachable in production.  It remains for `DomainAction` match exhaustiveness.
-            DomainAction::StartAssemblies | DomainAction::StopAssemblies => {}
+            DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_) => {}
         }
 
         Ok(())

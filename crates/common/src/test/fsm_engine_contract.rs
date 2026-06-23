@@ -1,7 +1,6 @@
 //! Unit tests for the FSM spec (`transition` / `output`).
 
-use std::collections::BTreeSet;
-use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, ZoneId};
+use crate::fsm::{output, transition, FsmAction, FsmEvent, FsmState, AssemblyId};
 use crate::vehicle_state::VehicleContext;
 use crate::vehicle_physics::{
     extreme_operation_active, EXTREME_OPERATION_WARNING_MESSAGE, RPM_EXTREME_OPERATION_THRESHOLD,
@@ -79,17 +78,18 @@ fn test_transition_standard_commute_flow() {
     let ctx = valid_twin_context();
     let now = Instant::now();
 
-    // Off + PowerOn → PreparingToStart (coordinator barrier starts)
+    // Off + PowerOn → PreparingToStart({Headlamp, Wiper})
     let mut state = transition(&FsmState::Off, &FsmEvent::PowerOn, &ctx, now);
-    assert_eq!(state.next_state, FsmState::PreparingToStart);
+    assert!(matches!(state.next_state, FsmState::PreparingToStart(_)));
 
-    // PreparingToStart + AssemblyZoneReady(Headlamp) [last pending] → Idle
-    let mut ctx_with_pending = ctx.clone();
-    ctx_with_pending.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+    // Shrink to just Headlamp remaining, then AssemblyZoneReady(Headlamp) → Idle.
+    let headlamp_only = FsmState::PreparingToStart(
+        std::collections::BTreeSet::from([AssemblyId::Headlamp])
+    );
     state = transition(
-        &state.next_state,
-        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
-        &ctx_with_pending,
+        &headlamp_only,
+        &FsmEvent::AssemblyZoneReady(AssemblyId::Headlamp),
+        &ctx,
         now,
     );
     assert_eq!(state.next_state, FsmState::Idle);
@@ -106,17 +106,18 @@ fn test_transition_standard_commute_flow() {
     state = transition(&state.next_state, &FsmEvent::UpdateRpm(0), &stopped_ctx, now);
     assert_eq!(state.next_state, FsmState::Idle);
 
-    // Idle + PowerOff → PreparingToStop (shutdown coordinator barrier starts)
+    // Idle + PowerOff → PreparingToStop({Headlamp, Wiper})
     state = transition(&state.next_state, &FsmEvent::PowerOff, &stopped_ctx, now);
-    assert_eq!(state.next_state, FsmState::PreparingToStop);
+    assert!(matches!(state.next_state, FsmState::PreparingToStop(_)));
 
-    // PreparingToStop + AssemblyZoneReady(Headlamp) [last pending] → Off
-    let mut stopped_ctx_with_pending = stopped_ctx.clone();
-    stopped_ctx_with_pending.pending_assemblies = BTreeSet::from([ZoneId::Headlamp]);
+    // Shrink to just Headlamp remaining, then AssemblyZoneReady(Headlamp) → Off.
+    let headlamp_only_stop = FsmState::PreparingToStop(
+        std::collections::BTreeSet::from([AssemblyId::Headlamp])
+    );
     state = transition(
-        &state.next_state,
-        &FsmEvent::AssemblyZoneReady(ZoneId::Headlamp),
-        &stopped_ctx_with_pending,
+        &headlamp_only_stop,
+        &FsmEvent::AssemblyZoneReady(AssemblyId::Headlamp),
+        &stopped_ctx,
         now,
     );
     assert_eq!(state.next_state, FsmState::Off);

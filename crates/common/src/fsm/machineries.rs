@@ -4,33 +4,49 @@
 //! direction/cause types are re-exported here for [`FsmEvent`] only.
 
 use crate::domain_types::VehicleState;
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 pub use crate::vehicle_state::{FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection};
 
+/// All assembly IDs the brain coordinates.
+///
+/// Single source of truth for assembly topology.  Used to seed the initial
+/// `BTreeSet` inside `PreparingToStart` / `PreparingToStop` on the entry transitions
+/// and to populate `StartAssemblies` / `StopAssemblies` action payloads.
+pub(crate) const ALL_ASSEMBLIES: &[AssemblyId] = &[AssemblyId::Headlamp, AssemblyId::Wiper];
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FsmState {
     Off,
-    /// Assemblies are being started; waiting for `AssemblyZoneReady` events to drain
-    /// `ctx.pending_assemblies` before transitioning to `Idle`.
-    PreparingToStart,
+    /// Assemblies are being started.
+    ///
+    /// The inner `BTreeSet` holds the assembly IDs that have **not yet** acknowledged
+    /// startup (i.e., have not sent `AssemblyZoneReady`).  Each acknowledgement shrinks
+    /// the set; when it becomes empty the FSM transitions to `Idle`.
+    ///
+    /// The set is the authoritative countdown — `VehicleContext` carries no separate
+    /// `remaining_assemblies` field.
+    PreparingToStart(BTreeSet<AssemblyId>),
     Idle,
     Driving,
     /// Driving in the dark without confirmed lighting (step 7 operational policy).
     DrivingDangerously,
     /// Speed > 160 km/h and RPM > 5500 sustained (see [`crate::vehicle_physics`]).
     ExtremeOperationWarning(Instant),
-    /// Assemblies are being stopped; waiting for `AssemblyZoneReady` events to drain
-    /// `ctx.pending_assemblies` before transitioning to `Off`.
-    PreparingToStop,
+    /// Assemblies are being stopped.
+    ///
+    /// Mirrors [`FsmState::PreparingToStart`]: the inner set holds assemblies that have
+    /// not yet acknowledged shutdown.  Empty set → `Off`.
+    PreparingToStop(BTreeSet<AssemblyId>),
 }
 
-/// Identity of a managed zone assembly.
+/// Identity of a managed assembly zone.
 ///
 /// Used by Phase-2+ messages to correlate zone replies with the originating assembly
 /// without coupling the brain to zone-specific types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum ZoneId {
+pub enum AssemblyId {
     Headlamp,
     /// Phase-7 assembly: windshield wiper.
     Wiper,
@@ -62,8 +78,8 @@ pub enum FsmEvent {
     /// This is an *external* event — it arrives from an assembly actor mailbox via
     /// a drained [`crate::twin_runtime::turn_barrier::TurnBarrier`], exactly like
     /// `FrontHeadlampOnAck`.  The FSM transition table counts down
-    /// `ctx.pending_assemblies` and transitions when the set becomes empty.
-    AssemblyZoneReady(ZoneId),
+    /// `ctx.remaining_assemblies` and transitions when the set becomes empty.
+    AssemblyZoneReady(AssemblyId),
     /// Rain has started falling on the windshield.  Binary fact — no intensity payload.
     /// Routes to the wiper zone via `zone_message_for_event`; FSM self-loops.
     RainsStarted,
@@ -77,10 +93,10 @@ pub enum FsmAction {
     StopBuzzer,
     LogWarning(String),
     PublishStateSync,
-    /// Instruct the actor to start all managed assemblies (send `BecomeOn` barrier).
-    StartAssemblies,
-    /// Instruct the actor to stop all managed assemblies (send `BecomeOff` barrier).
-    StopAssemblies,
+    /// Instruct the actor to start the listed assemblies (send `BecomeOn` barrier).
+    StartAssemblies(Vec<AssemblyId>),
+    /// Instruct the actor to stop the listed assemblies (send `BecomeOff` barrier).
+    StopAssemblies(Vec<AssemblyId>),
     None,
 }
 
@@ -92,24 +108,24 @@ pub enum DomainAction {
     LogWarning(String),
     RequestFrontHeadlampOn,
     RequestFrontHeadlampOff,
-    /// Actor must start all managed assemblies (push startup `TurnBarrier`).
+    /// Actor must start the listed assemblies (push startup `TurnBarrier`).
     /// Emitted on the `Off → PreparingToStart` transition.
-    StartAssemblies,
-    /// Actor must stop all managed assemblies (push shutdown `TurnBarrier`).
+    StartAssemblies(Vec<AssemblyId>),
+    /// Actor must stop the listed assemblies (push shutdown `TurnBarrier`).
     /// Emitted on the `Idle → PreparingToStop` transition.
-    StopAssemblies,
+    StopAssemblies(Vec<AssemblyId>),
 }
 
 impl From<&FsmState> for VehicleState {
     fn from(fsm: &FsmState) -> Self {
         match fsm {
             FsmState::Off => VehicleState::Off,
-            FsmState::PreparingToStart => VehicleState::PreparingToStart,
+            FsmState::PreparingToStart(_) => VehicleState::PreparingToStart,
             FsmState::Idle => VehicleState::Idle,
             FsmState::Driving => VehicleState::Driving,
             FsmState::DrivingDangerously => VehicleState::Critical,
             FsmState::ExtremeOperationWarning(_) => VehicleState::ExtremeOperationWarning,
-            FsmState::PreparingToStop => VehicleState::PreparingToStop,
+            FsmState::PreparingToStop(_) => VehicleState::PreparingToStop,
         }
     }
 }

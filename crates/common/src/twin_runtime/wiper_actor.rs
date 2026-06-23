@@ -97,7 +97,7 @@ impl WiperActor {
         state.ctx = zone_reply.ctx.clone();
         brain
             .send_message(DigitalTwinCarVocabulary::ZoneReady {
-                zone_id: crate::fsm::ZoneId::Wiper,
+                zone_id: crate::fsm::AssemblyId::Wiper,
                 turn_id,
                 tell_attempt,
                 reply: ZoneReply::Wiper(zone_reply),

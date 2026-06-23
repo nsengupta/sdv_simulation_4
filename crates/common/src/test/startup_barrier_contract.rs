@@ -19,7 +19,7 @@
 use std::time::Duration;
 
 use crate::digital_twin::{DigitalTwinCarVocabulary, ZoneReply};
-use crate::fsm::{FsmState, HeadlampState, ZoneId};
+use crate::fsm::{FsmState, HeadlampState, AssemblyId};
 use crate::test::{power_on_to_idle, wait_fsm_state, ActorGuard};
 use crate::twin_runtime::controller::vehicle_controller::VehicleControllerRuntimeOptions;
 use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply};
@@ -45,7 +45,7 @@ fn inject_zone_ready(controller: &VehicleController, turn_id: u64, state: Headla
     controller
         .get_actor_ref()
         .send_message(DigitalTwinCarVocabulary::ZoneReady {
-            zone_id: ZoneId::Headlamp,
+            zone_id: AssemblyId::Headlamp,
             turn_id,
             tell_attempt: 0,
             reply: zone_reply_with_state(state),
@@ -114,9 +114,8 @@ async fn given_power_on_with_silent_headlamp_then_fsm_stays_in_preparing_to_star
         .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
         .await
         .expect("get snapshot");
-    assert_eq!(
-        *snapshot.current_state(),
-        FsmState::PreparingToStart,
+    assert!(
+        matches!(*snapshot.current_state(), FsmState::PreparingToStart { .. }),
         "silent headlamp must keep FSM in PreparingToStart; got {:?}",
         snapshot.current_state()
     );
@@ -165,9 +164,8 @@ async fn given_power_off_with_silent_headlamp_then_fsm_stays_in_preparing_to_sto
         .get_snapshot(Some(ractor::concurrency::Duration::from_millis(50)))
         .await
         .expect("get snapshot");
-    assert_eq!(
-        *snapshot.current_state(),
-        FsmState::PreparingToStop,
+    assert!(
+        matches!(*snapshot.current_state(), FsmState::PreparingToStop { .. }),
         "silent headlamp must keep FSM in PreparingToStop; got {:?}",
         snapshot.current_state()
     );

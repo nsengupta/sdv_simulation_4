@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use crate::digital_twin::{ZoneMessage, ZoneReply};
-use crate::fsm::{FsmEvent, FsmState, ZoneId};
+use crate::fsm::{AssemblyId, FsmEvent, FsmState};
 use crate::twin_runtime::zone_replies::ZoneReplies;
 use crate::vehicle_state::{
     HeadlampMessage, HeadlampOutcome, HeadlampZoneReply,
@@ -42,44 +42,44 @@ pub struct ZoneTurnResult {
 pub(crate) fn zone_message_for_event(
     event: &FsmEvent,
     state: &FsmState,
-) -> Option<(ZoneId, ZoneMessage)> {
+) -> Option<(AssemblyId, ZoneMessage)> {
     match state {
-        FsmState::PreparingToStart | FsmState::PreparingToStop => None,
+        FsmState::PreparingToStart(_) | FsmState::PreparingToStop(_) => None,
         _ => user_event_to_zone_tell(event),
     }
 }
 
-/// Map a *user-originated* [`FsmEvent`] to the `(ZoneId, ZoneMessage)` pair that must be
+/// Map a *user-originated* [`FsmEvent`] to the `(AssemblyId, ZoneMessage)` pair that must be
 /// told to the relevant zone twinlet.  Returns `None` for events that do not require a zone
 /// tell (e.g. `PowerOn`, `UpdateRpm`) or for assembly lifecycle events (`AssemblyZoneReady`),
 /// which carry their reply embedded in the barrier.
-fn user_event_to_zone_tell(event: &FsmEvent) -> Option<(ZoneId, ZoneMessage)> {
+fn user_event_to_zone_tell(event: &FsmEvent) -> Option<(AssemblyId, ZoneMessage)> {
     match event {
         FsmEvent::UpdateAmbientLux(lux) => Some((
-            ZoneId::Headlamp,
+            AssemblyId::Headlamp,
             ZoneMessage::Headlamp(HeadlampMessage::AmbientLux(*lux)),
         )),
         FsmEvent::FrontHeadlampOnAck => Some((
-            ZoneId::Headlamp,
+            AssemblyId::Headlamp,
             ZoneMessage::Headlamp(HeadlampMessage::AckOn),
         )),
         FsmEvent::FrontHeadlampOffAck => Some((
-            ZoneId::Headlamp,
+            AssemblyId::Headlamp,
             ZoneMessage::Headlamp(HeadlampMessage::AckOff),
         )),
         FsmEvent::FrontHeadlampActuationIncomplete { direction, cause } => Some((
-            ZoneId::Headlamp,
+            AssemblyId::Headlamp,
             ZoneMessage::Headlamp(HeadlampMessage::ActuationIncomplete {
                 direction: *direction,
                 cause: *cause,
             }),
         )),
         FsmEvent::RainsStarted => Some((
-            ZoneId::Wiper,
+            AssemblyId::Wiper,
             ZoneMessage::Wiper(WiperMessage::Start),
         )),
         FsmEvent::RainsStopped => Some((
-            ZoneId::Wiper,
+            AssemblyId::Wiper,
             ZoneMessage::Wiper(WiperMessage::Stop),
         )),
         FsmEvent::UpdateRpm(_)
@@ -119,8 +119,8 @@ pub fn zone_turn(
     let mut next = ctx.clone();
     let mut outcomes: Vec<ZoneOutcome> = Vec::new();
 
-    let headlamp_ingress = zone_replies.get(&ZoneId::Headlamp).and_then(ZoneReply::as_headlamp);
-    let wiper_ingress = zone_replies.get(&ZoneId::Wiper).and_then(ZoneReply::as_wiper);
+    let headlamp_ingress = zone_replies.get(&AssemblyId::Headlamp).and_then(ZoneReply::as_headlamp);
+    let wiper_ingress = zone_replies.get(&AssemblyId::Wiper).and_then(ZoneReply::as_wiper);
 
     match event {
         FsmEvent::UpdateRpm(rpm) => {
@@ -183,15 +183,15 @@ pub fn zone_turn(
             outcomes.extend(zone_reply.outcomes.into_iter().map(ZoneOutcome::Wiper));
         }
         FsmEvent::PowerOn | FsmEvent::PowerOff | FsmEvent::Internal(_) => {}
-        FsmEvent::AssemblyZoneReady(zone_id) => {
-            match zone_id {
-                ZoneId::Headlamp => {
+        FsmEvent::AssemblyZoneReady(assembly_id) => {
+            match assembly_id {
+                AssemblyId::Headlamp => {
                     if let Some(reply) = headlamp_ingress {
                         next.headlamp = reply.ctx.clone();
                         outcomes.extend(reply.outcomes.iter().cloned().map(ZoneOutcome::Headlamp));
                     }
                 }
-                ZoneId::Wiper => {
+                AssemblyId::Wiper => {
                     if let Some(reply) = wiper_ingress {
                         next.wiper = reply.ctx.clone();
                         outcomes.extend(reply.outcomes.iter().cloned().map(ZoneOutcome::Wiper));

@@ -1,4 +1,4 @@
-//! Phase 2 RED → GREEN contract: HeadlampState::Ready, BecomeOn/BecomeOff messages, ZoneId.
+//! Phase 2 RED → GREEN contract: HeadlampState::Ready, BecomeOn/BecomeOff messages, AssemblyId.
 //!
 //! Verified behaviours:
 //! - `BecomeOn` : Off  → Ready  (assembly activation)
@@ -8,12 +8,12 @@
 //! - `Ready` triggers `OnRequested` on low lux (assembly active, lamp dark)
 //! - `AckOff` lands in `Ready`, not `Off` (lamp off but assembly still active)
 //! - `ActuationIncomplete(On)` recovers to `Ready`, not `Off`
-//! - `ZoneId::Headlamp` is constructible (vocabulary smoke)
+//! - `AssemblyId::Headlamp` is constructible (vocabulary smoke)
 
 use std::time::Instant;
 
 use crate::fsm::{
-    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, HeadlampState, ZoneId,
+    FrontHeadlampIncompleteCause, FrontHeadlampSwitchDirection, HeadlampState, AssemblyId,
 };
 use crate::vehicle_physics::LUX_ON_THRESHOLD;
 use crate::vehicle_state::{HeadlampContext, HeadlampMessage, HeadlampOutcome};
@@ -128,10 +128,10 @@ fn actuation_incomplete_on_recovers_to_ready() {
     );
 }
 
-// --- ZoneId vocabulary smoke ---
+// --- AssemblyId vocabulary smoke ---
 
 #[test]
 fn zone_id_headlamp_is_constructible() {
-    let id = ZoneId::Headlamp;
-    assert_eq!(id, ZoneId::Headlamp);
+    let id = AssemblyId::Headlamp;
+    assert_eq!(id, AssemblyId::Headlamp);
 }

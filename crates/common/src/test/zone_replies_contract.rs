@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use crate::digital_twin::ZoneReply;
-use crate::fsm::{FsmEvent, FsmState, HeadlampState, ZoneId};
+use crate::fsm::{FsmEvent, FsmState, HeadlampState, AssemblyId};
 use crate::twin_runtime::{commit_resolved_turn, twin_turn, ResolvedTurn, ZoneReplies};
 use crate::vehicle_state::{HeadlampContext, HeadlampZoneReply, VehicleContext};
 use crate::vehicle_physics::{FRONT_HEADLAMP_ON_ACK_WAIT, RPM_DRIVING_THRESHOLD};
@@ -23,7 +23,7 @@ fn test_zone_replies_simulate_locally_is_empty() {
     // Phase 7: simulate_locally returns an empty map (no zone replies at all).
     let r = ZoneReplies::simulate_locally();
     assert!(
-        r.get(&ZoneId::Headlamp).is_none(),
+        r.get(&AssemblyId::Headlamp).is_none(),
         "simulate_locally must produce an empty map; get(Headlamp) must be None"
     );
     assert!(
@@ -41,7 +41,7 @@ fn test_power_off_does_not_speculatively_run_zone_turn() {
         &FsmEvent::PowerOff,
         Instant::now(),
     );
-    assert_eq!(result.next_state, FsmState::PreparingToStop);
+    assert!(matches!(result.next_state, FsmState::PreparingToStop { .. }));
     assert_eq!(
         result.modified_ctx.headlamp.state,
         ctx.headlamp.state,
@@ -56,8 +56,8 @@ fn test_zone_replies_with_reply_is_non_default_constructor() {
         ctx: HeadlampContext { state: HeadlampState::On, ack_pending_since: None },
         outcomes: vec![],
     };
-    let r = ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(embed.clone()));
-    let got = r.get(&ZoneId::Headlamp).expect("must be present");
+    let r = ZoneReplies::with_reply(AssemblyId::Headlamp, ZoneReply::Headlamp(embed.clone()));
+    let got = r.get(&AssemblyId::Headlamp).expect("must be present");
     assert_eq!(got.as_headlamp(), Some(&embed));
 }
 
@@ -67,7 +67,7 @@ fn test_zone_replies_with_reply_is_non_default_constructor() {
 fn test_zone_replies_map_get_returns_none_for_absent_zone() {
     let r = ZoneReplies::simulate_locally();
     assert!(
-        r.get(&crate::fsm::ZoneId::Headlamp).is_none(),
+        r.get(&crate::fsm::AssemblyId::Headlamp).is_none(),
         "simulate_locally must return an empty map; get(Headlamp) must be None"
     );
 }
@@ -80,10 +80,10 @@ fn test_zone_replies_with_reply_stores_and_retrieves() {
         outcomes: vec![],
     };
     let r = ZoneReplies::with_reply(
-        crate::fsm::ZoneId::Headlamp,
+        crate::fsm::AssemblyId::Headlamp,
         crate::digital_twin::ZoneReply::Headlamp(embed.clone()),
     );
-    let got = r.get(&crate::fsm::ZoneId::Headlamp).expect("must be present");
+    let got = r.get(&crate::fsm::AssemblyId::Headlamp).expect("must be present");
     assert_eq!(got.as_headlamp(), Some(&embed));
 }
 
@@ -107,7 +107,7 @@ fn given_headlamp_ingress_embed_when_commit_resolved_turn_then_uses_tell_back_no
         ResolvedTurn {
             ingress: FsmEvent::TimerTick,
             now: t0,
-            zone_replies: ZoneReplies::with_reply(ZoneId::Headlamp, ZoneReply::Headlamp(embed)),
+            zone_replies: ZoneReplies::with_reply(AssemblyId::Headlamp, ZoneReply::Headlamp(embed)),
         },
     );
 
