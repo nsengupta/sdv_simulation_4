@@ -181,6 +181,8 @@ pub enum PublishedDomainAction {
     LogWarning(String),
     RequestFrontHeadlampOn,
     RequestFrontHeadlampOff,
+    RequestWiperStart,
+    RequestWiperStop,
 }
 
 impl PublishedDomainAction {
@@ -193,6 +195,8 @@ impl PublishedDomainAction {
             DomainAction::LogWarning(msg) => Some(Self::LogWarning(msg.clone())),
             DomainAction::RequestFrontHeadlampOn => Some(Self::RequestFrontHeadlampOn),
             DomainAction::RequestFrontHeadlampOff => Some(Self::RequestFrontHeadlampOff),
+            DomainAction::RequestWiperStart => Some(Self::RequestWiperStart),
+            DomainAction::RequestWiperStop => Some(Self::RequestWiperStop),
             // Internal coordination signals: not domain intents, not ledger-visible.
             DomainAction::StartAssemblies(_) | DomainAction::StopAssemblies(_) => None,
         }

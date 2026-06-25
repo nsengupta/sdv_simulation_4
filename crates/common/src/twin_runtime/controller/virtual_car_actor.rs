@@ -50,7 +50,9 @@ use crate::twin_runtime::wiper_actor::{
 };
 use crate::twin_runtime::twin_turn::{commit_resolved_turn as resolve_quiescence, ResolvedTurn};
 use crate::twin_runtime::ZoneReplies;
-use crate::twin_runtime::zone_tell_back::{synthetic_unresponsive_headlamp_reply, TellBackWait};
+use crate::twin_runtime::zone_tell_back::{
+    synthetic_unresponsive_headlamp_reply, synthetic_unresponsive_wiper_reply, TellBackWait,
+};
 use crate::twin_runtime::zone_turn::zone_message_for_event;
 use crate::twin_runtime::turn_barrier::{
     BarrierEntry, PassthroughBarrier, TellBackTimer, TimeoutOutcome, TurnBarrier,
@@ -316,10 +318,9 @@ impl VirtualCarActor {
             AssemblyId::Headlamp => ZoneReply::Headlamp(
                 synthetic_unresponsive_headlamp_reply(&ctx.headlamp)
             ),
-            AssemblyId::Wiper => ZoneReply::Wiper(crate::vehicle_state::WiperZoneReply {
-                ctx: ctx.wiper.clone(),
-                outcomes: vec![],
-            }),
+            AssemblyId::Wiper => ZoneReply::Wiper(
+                synthetic_unresponsive_wiper_reply(&ctx.wiper)
+            ),
         }
     }
 

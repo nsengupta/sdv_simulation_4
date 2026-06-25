@@ -65,6 +65,15 @@ mod startup_barrier_contract;
 mod turn_barrier_contract;
 
 #[cfg(test)]
+pub mod wiper_actuation_contract;
+
+#[cfg(test)]
+pub mod wiper_startup_failure_contract;
+
+#[cfg(test)]
+pub mod wiper_signal_contract;
+
+#[cfg(test)]
 pub mod wiper_zone_contract;
 
 /// A RAII (Resource Acquisition Is Initialization) guard for Ractor tests.
@@ -220,6 +229,8 @@ pub async fn expect_actuation_command(
 
 /// Inject the positive acknowledgement matching an observed command, via the real physical
 /// ingress path (so projection is exercised end to end).
+///
+/// Only valid for headlamp commands — wiper commands have no ACK protocol.
 pub async fn inject_matching_ack(controller: &VehicleController, command: &ActuationCommand) {
     let confirmed = match command {
         ActuationCommand::SwitchFrontHeadlampOn { .. } => {
@@ -227,6 +238,9 @@ pub async fn inject_matching_ack(controller: &VehicleController, command: &Actua
         }
         ActuationCommand::SwitchFrontHeadlampOff { .. } => {
             PhysicalCarVocabulary::FrontHeadlampCommandConfirmed { on_command: false }
+        }
+        ActuationCommand::StartWiper | ActuationCommand::StopWiper => {
+            panic!("wiper commands have no ACK protocol; use wiper-specific test helpers")
         }
     };
     controller
@@ -297,6 +311,8 @@ pub async fn wait_fsm_state(
 
 /// Inject the negative acknowledgement matching an observed command, via the real physical
 /// ingress path.
+///
+/// Only valid for headlamp commands — wiper commands have no ACK protocol.
 pub async fn inject_matching_nack(controller: &VehicleController, command: &ActuationCommand) {
     let rejected = match command {
         ActuationCommand::SwitchFrontHeadlampOn { .. } => {
@@ -304,6 +320,9 @@ pub async fn inject_matching_nack(controller: &VehicleController, command: &Actu
         }
         ActuationCommand::SwitchFrontHeadlampOff { .. } => {
             PhysicalCarVocabulary::FrontHeadlampCommandRejected { on_command: false }
+        }
+        ActuationCommand::StartWiper | ActuationCommand::StopWiper => {
+            panic!("wiper commands have no ACK protocol; use wiper-specific test helpers")
         }
     };
     controller

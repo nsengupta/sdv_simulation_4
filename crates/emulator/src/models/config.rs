@@ -36,10 +36,19 @@ pub struct AmbientRoadLightModelConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct RainModelConfig {
+    /// Per 100 ms tick, probability of rain starting when currently dry.
+    pub rain_event_probability_per_tick: f32,
+    pub rain_duration_ticks_min: u16,
+    pub rain_duration_ticks_max: u16,
+}
+
+#[derive(Debug, Clone)]
 pub struct PhysicalWorldModelConfig {
     pub speed: SpeedModelConfig,
     pub rpm: RpmModelConfig,
     pub ambient_road_light: AmbientRoadLightModelConfig,
+    pub rain: RainModelConfig,
 }
 
 impl PhysicalWorldModelConfig {
@@ -77,6 +86,13 @@ impl PhysicalWorldModelConfig {
                 // (test/demo/realistic). Today only `tunnel_event_probability_per_tick` is
                 // env-overridable (`EMULATOR_TUNNEL_PROB`); the rest of the profile is fixed.
                 cycle_secs: 90,
+            },
+            rain: RainModelConfig {
+                // Default ≈ rain every ~12 s when dry (demo-friendly); override at startup with
+                // `EMULATOR_RAIN_PROB` (e.g. 0.002 for infrequent rain). See `main.rs`.
+                rain_event_probability_per_tick: 0.008,
+                rain_duration_ticks_min: 30,
+                rain_duration_ticks_max: 60,
             },
         }
     }

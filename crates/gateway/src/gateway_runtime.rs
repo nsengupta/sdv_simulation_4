@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use vehicle_device_bus::devices::front_headlamp::can::{decode_payload_from_can_frame, encode_command_frame};
 use vehicle_device_bus::devices::front_headlamp::policy::{FrontHeadlampPolicy, FrontHeadlampPolicyDecision};
+use vehicle_device_bus::devices::wiper::can::encode_wiper_command_frame;
 
 use crate::ingress;
 use crate::transition_log;
@@ -86,7 +87,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
     .await
     .map_err(|e| anyhow::anyhow!("spawn actor: {e}"))?;
 
-    spawn_front_headlamp_command_publisher(
+    spawn_actuation_command_publishers(
         actuation_cmd_rx,
         launch.can_interface.to_string(),
         front_headlamp_policy.clone(),
@@ -105,7 +106,7 @@ pub async fn run(launch: GatewayLaunchConfig<'_>) -> Result<()> {
             launch.can_interface
         );
         println!(
-            "[gateway] front-headlamp CMD egress on CAN; run `cargo run -p front_headlamp_actuator` for ACK/NACK"
+            "[gateway] front-headlamp + wiper CMD egress on CAN; run `cargo run -p front_headlamp_actuator` and `cargo run -p wiper_actuator`"
         );
         if launch.print_timer_tick {
             println!("[gateway] TimerTick heartbeat logging enabled (--print-timer-tick)");
@@ -227,6 +228,31 @@ fn spawn_can_reader_thread(
     Ok(handle)
 }
 
+/// Fan-out: one actuation channel → headlamp publisher + wiper publisher (each filters its variants).
+fn spawn_actuation_command_publishers(
+    mut actuation_cmd_rx: mpsc::Receiver<ActuationCommand>,
+    can_interface: String,
+    front_headlamp_policy: Arc<Mutex<FrontHeadlampPolicy>>,
+) {
+    let (headlamp_tx, headlamp_rx) = mpsc::channel(ACTUATION_COMMAND_CHANNEL_CAPACITY);
+    let (wiper_tx, wiper_rx) = mpsc::channel(ACTUATION_COMMAND_CHANNEL_CAPACITY);
+
+    tokio::spawn(async move {
+        while let Some(cmd) = actuation_cmd_rx.recv().await {
+            let tx = match &cmd {
+                ActuationCommand::StartWiper | ActuationCommand::StopWiper => &wiper_tx,
+                _ => &headlamp_tx,
+            };
+            if tx.send(cmd).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    spawn_front_headlamp_command_publisher(headlamp_rx, can_interface.clone(), front_headlamp_policy);
+    spawn_wiper_command_publisher(wiper_rx, can_interface);
+}
+
 /// Egress: twin actuation intent → policy pending state → CMD frame on CAN.
 fn spawn_front_headlamp_command_publisher(
     mut actuation_cmd_rx: mpsc::Receiver<ActuationCommand>,
@@ -257,6 +283,35 @@ fn spawn_front_headlamp_command_publisher(
                     }
                 }
                 Err(e) => eprintln!("[gateway]: encode front-headlamp CMD failed: {e:?}"),
+            }
+        }
+    });
+}
+
+/// Egress: twin wiper actuation intent → CMD frame on CAN (fire-and-forget; no policy lock).
+fn spawn_wiper_command_publisher(
+    mut actuation_cmd_rx: mpsc::Receiver<ActuationCommand>,
+    can_interface: String,
+) {
+    tokio::spawn(async move {
+        let socket = match CanSocket::open(&can_interface) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[gateway]: cannot open CAN {can_interface} for wiper CMD TX: {e}");
+                return;
+            }
+        };
+        while let Some(cmd) = actuation_cmd_rx.recv().await {
+            if !matches!(cmd, ActuationCommand::StartWiper | ActuationCommand::StopWiper) {
+                continue;
+            }
+            match encode_wiper_command_frame(&cmd) {
+                Ok(frame) => {
+                    if let Err(e) = socket.write_frame(&frame) {
+                        eprintln!("[gateway]: wiper CMD write_frame failed: {e:?}");
+                    }
+                }
+                Err(e) => eprintln!("[gateway]: wiper CMD encode failed: {e}"),
             }
         }
     });

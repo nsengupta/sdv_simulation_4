@@ -27,10 +27,17 @@ pub struct CorrelationId {
 }
 
 /// Outbound actuation intent emitted by controller runtime.
+///
+/// Headlamp variants carry a [`CorrelationId`] for ACK/NACK round-trip tracking.
+/// Wiper variants carry no correlation id — the wiper has no ACK protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActuationCommand {
     SwitchFrontHeadlampOn { correlation_id: CorrelationId },
     SwitchFrontHeadlampOff { correlation_id: CorrelationId },
+    /// Tell the wiper actuator to start wiping.
+    StartWiper,
+    /// Tell the wiper actuator to stop wiping.
+    StopWiper,
 }
 
 /// Inbound actuation feedback on the controller actuation port (ACK/NACK, correlated).

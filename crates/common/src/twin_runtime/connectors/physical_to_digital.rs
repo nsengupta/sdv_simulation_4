@@ -18,6 +18,8 @@ impl Projector<PhysicalCarVocabulary, DigitalTwinCarVocabulary> for PhysicalToDi
                 }
                 VssSignal::EngineRpm(rpm) => FsmEvent::UpdateRpm(rpm),
                 VssSignal::AmbientLux(lux) => FsmEvent::UpdateAmbientLux(lux),
+                VssSignal::RainDetected(true)  => FsmEvent::RainsStarted,
+                VssSignal::RainDetected(false) => FsmEvent::RainsStopped,
             },
             PhysicalCarVocabulary::TimerTick => FsmEvent::TimerTick,
             PhysicalCarVocabulary::SystemReset => FsmEvent::PowerOff,

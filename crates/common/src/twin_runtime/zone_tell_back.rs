@@ -1,6 +1,7 @@
 //! Brain↔zone tell-back wait: retry, synthetic embed on exhaustion (ADR-7 step 6+).
 
 use crate::vehicle_state::{HeadlampContext, HeadlampOutcome, HeadlampZoneReply};
+use crate::vehicle_state::{WiperContext, WiperOutcome, WiperZoneReply};
 use crate::twin_runtime::constants::{ZONE_TELL_BACK_ATTEMPT_COUNT, ZONE_TELL_BACK_MAX_RETRIES};
 
 /// One in-flight tell-back wait (correlation for reply vs timeout).
@@ -53,6 +54,17 @@ pub fn synthetic_unresponsive_headlamp_reply(headlamp_ctx: &HeadlampContext) -> 
         ctx: headlamp_ctx.clone(),
         outcomes: vec![HeadlampOutcome::LogWarning(format!(
             "headlamp tell-back unresponsive after {ZONE_TELL_BACK_ATTEMPT_COUNT} tell attempts"
+        ))],
+    }
+}
+
+/// Synthetic embed when the wiper twinlet never tell-backed (surfaces as a `LogWarning`
+/// on the diagnostic stream; wiper has no intermediate actuation state to recover).
+pub fn synthetic_unresponsive_wiper_reply(wiper_ctx: &WiperContext) -> WiperZoneReply {
+    WiperZoneReply {
+        ctx: wiper_ctx.clone(),
+        outcomes: vec![WiperOutcome::LogWarning(format!(
+            "wiper tell-back unresponsive after {ZONE_TELL_BACK_ATTEMPT_COUNT} tell attempts"
         ))],
     }
 }

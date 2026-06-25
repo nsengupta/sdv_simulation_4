@@ -50,10 +50,16 @@ pub struct WiperZoneReply {
 }
 
 /// Zone-local egress — L4 maps to actuation / diagnostics.
+///
+/// - `StartWiping`   — wiper motor should be activated.
+/// - `StopWiping`    — wiper motor should be deactivated.
+/// - `LogWarning`    — observability signal; routed to diagnostic sink, never actuated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WiperOutcome {
     StartWiping,
     StopWiping,
+    /// Emitted by the synthetic unresponsive reply when the twinlet tell-back times out.
+    LogWarning(String),
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────

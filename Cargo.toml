@@ -6,4 +6,5 @@ members = [
     "crates/gateway",
     "crates/emulator",
     "crates/front_headlamp_actuator",
+    "crates/wiper_actuator",
 ]

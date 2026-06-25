@@ -3,6 +3,9 @@ use socketcan::{CanFrame, EmbeddedFrame, StandardId};
 pub const ID_SPEED: u16 = 0x101;
 pub const ID_RPM: u16 = 0x102;
 pub const ID_AMBIENT_LUX: u16 = 0x103;
+/// Binary rain-presence signal from the windshield rain sensor.
+/// `true` = rain detected; `false` = no rain.
+pub const ID_RAIN_DETECTED: u16 = 0x104;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VssSignal {
@@ -12,6 +15,9 @@ pub enum VssSignal {
     EngineRpm(u16),
     /// Vehicle.Cabin or exterior ambient light sensor (Unit: lux, Scaling: 1.0)
     AmbientLux(u16),
+    /// Vehicle.Body.Windshield.Front.WipingSystem.RainSensor — binary detection.
+    /// `true` = rain present; `false` = rain absent.
+    RainDetected(bool),
 }
 
 impl VssSignal {
@@ -39,6 +45,9 @@ impl VssSignal {
             ID_AMBIENT_LUX => {
                 let raw = u16::from_be_bytes([data[0], data[1]]);
                 Some(Self::AmbientLux(raw))
+            }
+            ID_RAIN_DETECTED => {
+                Some(Self::RainDetected(data[0] != 0))
             }
             _ => None,
         }
@@ -78,6 +87,10 @@ impl VssSignal {
             }
             Self::AmbientLux(val) => {
                 build_frame(ID_AMBIENT_LUX, &val.to_be_bytes())
+            }
+            Self::RainDetected(val) => {
+                // Byte 0: 0x01 = rain, 0x00 = no rain. Byte 1: reserved zero.
+                build_frame(ID_RAIN_DETECTED, &[*val as u8, 0])
             }
         }
     }

@@ -120,6 +120,16 @@ impl ActuationManager for DefaultActuationManager {
                         .await;
                 }
             }
+            DomainAction::RequestWiperStart => {
+                if let Some(tx) = &self.actuation_command_tx {
+                    let _ = tx.send(ActuationCommand::StartWiper).await;
+                }
+            }
+            DomainAction::RequestWiperStop => {
+                if let Some(tx) = &self.actuation_command_tx {
+                    let _ = tx.send(ActuationCommand::StopWiper).await;
+                }
+            }
             // StartAssemblies / StopAssemblies are intercepted by `apply_committed_quiescence`
             // in `virtual_car_actor.rs` before they reach the actuation manager, so this arm
             // is unreachable in production.  It remains for `DomainAction` match exhaustiveness.

@@ -108,6 +108,10 @@ pub enum DomainAction {
     LogWarning(String),
     RequestFrontHeadlampOn,
     RequestFrontHeadlampOff,
+    /// Instruct the wiper actuator to start wiping.
+    RequestWiperStart,
+    /// Instruct the wiper actuator to stop wiping.
+    RequestWiperStop,
     /// Actor must start the listed assemblies (push startup `TurnBarrier`).
     /// Emitted on the `Off → PreparingToStart` transition.
     StartAssemblies(Vec<AssemblyId>),

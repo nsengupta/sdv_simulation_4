@@ -86,6 +86,34 @@ fn given_front_headlamp_off_confirmed_when_projected_then_maps_to_fsm() {
     }
 }
 
+// ── Step 8: RainDetected projection ───────────────────────────────────────────
+
+#[test]
+fn given_rain_detected_true_when_projected_then_maps_to_rains_started() {
+    let projector = PhysicalToDigitalProjector;
+    let out = projector
+        .project(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::RainDetected(true)))
+        .expect("rain detected projection must succeed");
+    match out {
+        DigitalTwinCarVocabulary::Fsm(FsmEvent::RainsStarted) => {}
+        other => panic!("unexpected rain=true mapping: {other:?}"),
+    }
+}
+
+#[test]
+fn given_rain_detected_false_when_projected_then_maps_to_rains_stopped() {
+    let projector = PhysicalToDigitalProjector;
+    let out = projector
+        .project(PhysicalCarVocabulary::TelemetryUpdate(VssSignal::RainDetected(false)))
+        .expect("rain detected false projection must succeed");
+    match out {
+        DigitalTwinCarVocabulary::Fsm(FsmEvent::RainsStopped) => {}
+        other => panic!("unexpected rain=false mapping: {other:?}"),
+    }
+}
+
+// ── Headlamp rejected ─────────────────────────────────────────────────────────
+
 #[test]
 fn given_front_headlamp_rejected_when_projected_then_maps_to_incomplete_with_negative_ack() {
     let projector = PhysicalToDigitalProjector;

@@ -191,7 +191,7 @@ async fn boot_silent_both(
 // ── Test 1: AssemblyId::Wiper is distinct ─────────────────────────────────────────
 
 #[test]
-fn test_wiper_zone_id_exists_and_is_distinct_from_headlamp() {
+fn given_wiper_and_headlamp_zone_ids_when_compared_then_distinct() {
     let headlamp = AssemblyId::Headlamp;
     let wiper = AssemblyId::Wiper;
     assert_ne!(headlamp, wiper);
@@ -202,7 +202,7 @@ fn test_wiper_zone_id_exists_and_is_distinct_from_headlamp() {
 // ── Test 2: RainsStarted routes to wiper zone ─────────────────────────────────
 
 #[test]
-fn test_rains_started_routes_to_wiper_zone() {
+fn given_rains_started_in_driving_when_zone_routed_then_wiper_start_message() {
     let result = zone_message_for_event(&FsmEvent::RainsStarted, &FsmState::Driving);
     match result {
         Some((zone_id, ZoneMessage::Wiper(WiperMessage::Start))) => {
@@ -215,7 +215,7 @@ fn test_rains_started_routes_to_wiper_zone() {
 // ── Test 3: RainsStarted suppressed during PreparingToStart ──────────────────
 
 #[test]
-fn test_rains_started_suppressed_during_preparing_to_start() {
+fn given_rains_started_in_preparing_to_start_when_zone_routed_then_none() {
     let result = zone_message_for_event(&FsmEvent::RainsStarted, &FsmState::PreparingToStart(std::collections::BTreeSet::new()));
     assert!(result.is_none(), "expected None during PreparingToStart, got {result:?}");
 }
@@ -223,7 +223,7 @@ fn test_rains_started_suppressed_during_preparing_to_start() {
 // ── Test 4: BecomeOn → Ready ──────────────────────────────────────────────────
 
 #[test]
-fn test_wiper_become_on_transitions_to_ready() {
+fn given_wiper_off_when_become_on_then_ready() {
     let ctx = WiperContext::default();
     assert_eq!(ctx.state, WiperState::Off);
     let reply = ctx.on_receiving_message(WiperMessage::BecomeOn);
@@ -234,7 +234,7 @@ fn test_wiper_become_on_transitions_to_ready() {
 // ── Test 5: Start while Ready → Running ──────────────────────────────────────
 
 #[test]
-fn test_wiper_start_while_ready_transitions_to_running() {
+fn given_wiper_ready_when_start_then_running_with_start_wiping_outcome() {
     let mut ctx = WiperContext::default();
     ctx.state = WiperState::Ready;
     let reply = ctx.on_receiving_message(WiperMessage::Start);
@@ -246,7 +246,7 @@ fn test_wiper_start_while_ready_transitions_to_running() {
 // ── Test 6: Stop while Running → Ready ───────────────────────────────────────
 
 #[test]
-fn test_wiper_stop_while_running_transitions_to_ready() {
+fn given_wiper_running_when_stop_then_ready_with_stop_wiping_outcome() {
     let mut ctx = WiperContext::default();
     ctx.state = WiperState::Running;
     let reply = ctx.on_receiving_message(WiperMessage::Stop);
@@ -255,10 +255,19 @@ fn test_wiper_stop_while_running_transitions_to_ready() {
     assert_eq!(reply.outcomes, vec![WiperOutcome::StopWiping]);
 }
 
+// ── Test 1b: WiperOutcome::LogWarning variant exists ─────────────────────────
+
+#[test]
+fn given_wiper_log_warning_outcome_when_created_then_matches_variant() {
+    use crate::vehicle_state::WiperOutcome;
+    let outcome = WiperOutcome::LogWarning("wiper unresponsive".to_string());
+    assert!(matches!(outcome, WiperOutcome::LogWarning(_)));
+}
+
 // ── Test 7: BecomeOff from Running → Off directly ────────────────────────────
 
 #[test]
-fn test_wiper_become_off_from_running_transitions_to_off_directly() {
+fn given_wiper_running_when_become_off_then_off_directly() {
     let mut ctx = WiperContext::default();
     ctx.state = WiperState::Running;
     let reply = ctx.on_receiving_message(WiperMessage::BecomeOff);
@@ -275,7 +284,7 @@ fn test_wiper_become_off_from_running_transitions_to_off_directly() {
 /// Non-silent spawn; after `PowerOn` both twinlets must reach their `Ready` state.
 /// This verifies that `BecomeOn` is sent to both assemblies and both barriers drain.
 #[tokio::test]
-async fn test_wiper_included_in_startup_barrier() {
+async fn given_power_on_when_both_assemblies_reply_then_idle() {
     let (controller, _guard) = spawn_non_silent("WIPER-STARTUP-1").await;
 
     controller.send_power_on().await.expect("power on");
@@ -301,7 +310,7 @@ async fn test_wiper_included_in_startup_barrier() {
 /// Both zones silent; manually inject wiper reply before headlamp reply (out of order).
 /// HOB invariant: headlamp turn (front) must drain before wiper turn (rear).
 #[tokio::test]
-async fn test_concurrent_headlamp_and_wiper_events_commit_in_arrival_order() {
+async fn given_headlamp_then_wiper_events_when_replies_out_of_order_then_fifo_commit() {
     let (controller, mut rx, _guard) = spawn_silent_both("WIPER-ORDER-1").await;
     boot_silent_both(&controller, &mut rx).await;
 
@@ -353,7 +362,7 @@ async fn test_concurrent_headlamp_and_wiper_events_commit_in_arrival_order() {
 /// Headlamp lux must commit immediately after the headlamp barrier drains, without waiting
 /// for the wiper barrier to complete.
 #[tokio::test]
-async fn test_slow_wiper_does_not_delay_headlamp_event_commit() {
+async fn given_silent_wiper_when_headlamp_lux_then_rains_then_headlamp_commits_first() {
     let (controller, mut rx, _guard) = spawn_silent_wiper("WIPER-SLOW-1").await;
 
     // Boot: headlamp is non-silent (auto-replies); wiper is silent (needs manual inject).

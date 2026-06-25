@@ -114,6 +114,10 @@ fn main() -> Result<()> {
         let command_direction = match &cmd {
             ActuationCommand::SwitchFrontHeadlampOn { .. } => "ON",
             ActuationCommand::SwitchFrontHeadlampOff { .. } => "OFF",
+            // Wiper commands are never decoded by the front-headlamp actuator's
+            // codec (`actuation_command_from_cmd_payload`), so this arm is unreachable
+            // in practice — but required for `ActuationCommand` match exhaustiveness.
+            ActuationCommand::StartWiper | ActuationCommand::StopWiper => continue,
         };
         let (session, seq) = actuation_command_wire_meta(&cmd);
         log_line(

@@ -6,12 +6,12 @@
 **grows on its predecessor** — reusing and refactoring what still fits, and changing structure
 where the next goal requires it.
 
-| Iteration | Repository | Focus |
-|-----------|-----------|-------|
-| 1 | [`sdv_simulation_1`](https://github.com/nsengupta/sdv_simulation_1) | First working CAN control loop |
-| 2 | [`sdv_simulation_2`](https://github.com/nsengupta/sdv_simulation_2) | Assembly-based zone contexts, transition ledger, diagnostics |
-| 3 | [`sdv_simulation_3`](https://github.com/nsengupta/sdv_simulation_3) | Headlamp twinlet (first actorified assembly), quiescent commit |
-| **4** | **`sdv_simulation_4` (this repo)** | **Brain FSM Redesign** — start/stop barriers, generic assembly envelopes, ROB turn queue, second assembly (Wiper) |
+| Iteration | Repository                                                          | Focus                                                                                                             |
+| --------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| 1         | [`sdv_simulation_1`](https://github.com/nsengupta/sdv_simulation_1) | First working CAN control loop                                                                                    |
+| 2         | [`sdv_simulation_2`](https://github.com/nsengupta/sdv_simulation_2) | Assembly-based zone contexts, transition ledger, diagnostics                                                      |
+| 3         | [`sdv_simulation_3`](https://github.com/nsengupta/sdv_simulation_3) | Headlamp twinlet (first actorified assembly), quiescent commit                                                    |
+| **4**     | **`sdv_simulation_4` (this repo)**                                  | **Brain FSM Redesign** — start/stop barriers, generic assembly envelopes, ROB turn queue, second assembly (Wiper) |
 
 ---
 
@@ -26,8 +26,9 @@ ingress order.
 ### Why a TurnBarrier?
 
 The Brain actor's mailbox receives both of:
-1.  External events, coming from Controller, viz., `PowerOn`, `RainsStarted` etc.
-2.  Conversational events, coming from the Assemblies, viz., `ZoneReady(Headlamp)`
+
+1. External events, coming from Controller, viz., `PowerOn`, `RainsStarted` etc.
+2. Conversational events, coming from the Assemblies, viz., `ZoneReady(Headlamp)`
 
 In Iteration 3, each CAN ingress produced a *single* pending turn. If two events - say, 
 HeadLampOn arrived while the first was still awaiting a headlamp tell-back, the second was stuffed into a
@@ -70,7 +71,7 @@ countdown** — no duplicate state in `VehicleContext`.
   each unresponsive assembly independently, rather than a single `TellBackTimeout { turn_id }`
   that retried all zones at once.
 - **Second assembly (Wiper)**: `AssemblyId::Wiper` is now defined alongside `Headlamp` in
-  `ALL_ASSEMBLIES`. Wiper lifecycle is in-process (not a separate twinlet actor yet).
+  `ALL_ASSEMBLIES`. Wiper is a fully actorified twinlet with immediate transitions (no ACK protocol).
 - **`PendingBrainTurn` deleted**: The old enum and its special-case handling are fully absorbed
   into the ROB pattern.
 - **Brain Actor's `handle()` arms**: Exactly 4 arms — `Fsm`, `ZoneReady`,
@@ -82,20 +83,20 @@ countdown** — no duplicate state in `VehicleContext`.
 
 Terms used throughout this README.
 
-| Term | Meaning                                                                                                                                                                                                        |
-|------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Assembly** | A managed device group identified by `AssemblyId` (`Headlamp`, `Wiper`). Each assembly has a lifecycle (`<BecomeOn>` → `Ready` → … → `<BecomeOff>` → `Off`) and a `{Assembly}Context` in `VehicleContext`.     |
-| **Twinlet** | One assembly as a **child actor** under the BrainTwin (mailbox + timers).                                                                                                                                      |
-| **Brain** | The digital twin overall — parent actor (`VirtualCarActor`), quiescent commit, ledger, actuation. State: `DigitalTwinCar`.                                                                                     |
-| **Zone** | SDV industry term for a vehicle concern. The mailbox vocabulary uses `ZoneReady` / `ZoneReply` / `ZoneSpontaneousEvent` as generic envelopes — these are **not** the internal tracking type (`AssemblyId` is). |
-| **Tell** | Brain → twinlet; **fire-and-forget** (mailbox free until tell-back or timeout).                                                                                                                                |
-| **Tell-back** | Twinlet → Brain reply (`turn_id`, `tell_attempt`; e.g. `ZoneReady { zone_id: Headlamp, … }`).                                                                                                                  |
+| Term            | Meaning                                                                                                                                                                                                        |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Assembly**    | A managed device group identified by `AssemblyId` (`Headlamp`, `Wiper`). Each assembly has a lifecycle (`<BecomeOn>` → `Ready` → … → `<BecomeOff>` → `Off`) and a `{Assembly}Context` in `VehicleContext`.     |
+| **Twinlet**     | One assembly as a **child actor** under the BrainTwin (mailbox + timers).                                                                                                                                      |
+| **Brain**       | The digital twin overall — parent actor (`VirtualCarActor`), quiescent commit, ledger, actuation. State: `DigitalTwinCar`.                                                                                     |
+| **Zone**        | SDV industry term for a vehicle concern. The mailbox vocabulary uses `ZoneReady` / `ZoneReply` / `ZoneSpontaneousEvent` as generic envelopes — these are **not** the internal tracking type (`AssemblyId` is). |
+| **Tell**        | Brain → twinlet; **fire-and-forget** (mailbox free until tell-back or timeout).                                                                                                                                |
+| **Tell-back**   | Twinlet → Brain reply (`turn_id`, `tell_attempt`; e.g. `ZoneReady { zone_id: Headlamp, … }`).                                                                                                                  |
 | **Spontaneous** | Twinlet tell-back on its **own deadline** (e.g. ACK timer), not a new CAN ingress.                                                                                                                             |
-| **Cut** | Snapshot `(FsmState, VehicleContext)` at one instant.                                                                                                                                                          |
-| **Quiescence** | Multi-hop resolve to a **stable cut**; one ledger row per hop; one `apply_step`.                                                                                                                               |
-| **ROB** | Re-order buffer (`VecDeque<BarrierEntry>`) — preserves event ingress order regardless of assembly reply arrival order.                                                                                         |
+| **Cut**         | Snapshot `(FsmState, VehicleContext)` at one instant.                                                                                                                                                          |
+| **Quiescence**  | Multi-hop resolve to a **stable cut**; one ledger row per hop; one `apply_step`.                                                                                                                               |
+| **ROB**         | Re-order buffer (`VecDeque<BarrierEntry>`) — preserves event ingress order regardless of assembly reply arrival order.                                                                                         |
 | **TurnBarrier** | One per ingress event: tracks which assemblies have replied, holds per-assembly timers and replies.                                                                                                            |
-| **Pyramid** | Layered modules in `common` (**L0**–**L6**, physics up to gateway/actuator binaries); acyclic imports.                                                                                                         |
+| **Pyramid**     | Layered modules in `common` (**L0**–**L6**, physics up to gateway/actuator binaries); acyclic imports.                                                                                                         |
 
 ---
 
@@ -150,11 +151,17 @@ Full transition table: [`diagrams/fsm_state_transitions.md`](diagrams/fsm_state_
 
 ---
 
-## Assembly FSM States
+## Assembly lifecycle
 
-Each assembly transitions independently through its own lifecycle states, driven by
-`BecomeOn` / `BecomeOff` tells from the Brain. The assembly acknowledges readiness via
-`AssemblyZoneReady(AssemblyId)` tell-backs.
+Each assembly transitions independently through its own internal FSM, driven by
+`BecomeOn` / `BecomeOff` tells from the Brain during `PreparingToStart` /
+`PreparingToStop`. The assembly acknowledges readiness via
+`AssemblyZoneReady(AssemblyId)` tell-backs. **Internal states differ by assembly** —
+headlamp and wiper are documented separately below.
+
+### Headlamp assembly FSM
+
+Lux thresholding and hardware `AckOn` / `AckOff` intermediates:
 
 ```
 Off ──BecomeOn──► Ready ──lux≤threshold──► OnRequested ──AckOn──► On
@@ -168,10 +175,12 @@ Off ──BecomeOn──► Ready ──lux≤threshold──► OnRequested ─
 ```
 
 **Events** (messages from Brain):
+
 - **`BecomeOn`** — Brain tell: power up the assembly lifecycle.
 - **`BecomeOff`** — Brain tell: power down the assembly lifecycle.
 
 **States:**
+
 - **Off** — Initial; no actuation. Ignores all zone messages except `BecomeOn`/`BecomeOff`.
 - **Ready** — Idle but powered; awaiting lux threshold command.
 - **OnRequested** — ON actuation sent to hardware; awaiting `AckOn`.
@@ -179,6 +188,11 @@ Off ──BecomeOn──► Ready ──lux≤threshold──► OnRequested ─
 - **OffRequested** — OFF actuation sent to hardware; awaiting `AckOff`.
 
 Full diagram: [`diagrams/headlamp_assembly_state_transition.md`](diagrams/headlamp_assembly_state_transition.md)
+
+### Wiper assembly FSM
+
+Wiper uses a simpler three-state model (`Off` / `Ready` / `Running`) with no lux gate and
+no ACK intermediates — see [`diagrams/wiper_assembly_state_transition.md`](diagrams/wiper_assembly_state_transition.md).
 
 ---
 
@@ -189,13 +203,13 @@ The `common` crate follows an acyclic layer pyramid. The critical invariant:
 
 ```
 L0  vehicle_physics          Constants, pure kinematics (no FSM, no I/O)
-L1  vehicle_state            Assemblies: powertrain, health, visibility, headlamp
+L1  vehicle_state            Assemblies: powertrain, health, visibility, headlamp, wiper
 L2  fsm                      FsmState, FsmEvent, step(), transition_map — pure decision core
 L3  digital_twin, published  Twin capsule (DigitalTwinCar), serializable ledger projection
-L4  twin_runtime, sinks      VirtualCarActor, HeadlampActor, turn_barrier, detectors
+L4  twin_runtime, sinks      VirtualCarActor, HeadlampActor, WiperActor, turn_barrier, detectors
 L5  facade                   Public surface — the only module gateway binaries may import
 L6  gateway, emulator,       Application binaries — never import internal modules
-    front_headlamp_actuator
+    front_headlamp_actuator, wiper_actuator
 ```
 
 Detail: [`docs/library-reorg.md`](docs/library-reorg.md)
@@ -281,10 +295,16 @@ sequenceDiagram
 
 ---
 
-## Assembly Architecture (HeadlampActor)
+## Assembly Architecture (Twinlets)
 
-Each assembly twinlet runs as a child actor under the Brain. The HeadlampActor is the only
-fully actorified twinlet in this iteration; Wiper is in-process.
+Both managed assemblies run as child actors under the Brain: `HeadlampActor` and
+`WiperActor`. They share the same tell / tell-back envelope (`ZoneReady`) but differ in
+whether operational transitions wait for hardware ACK.
+
+### HeadlampActor
+
+Headlamp models a full actuation round-trip: intermediate `OnRequested` / `OffRequested`
+states, an ACK timer, and spontaneous `ZoneSpontaneous` events on deadline expiry.
 
 ```text
 HeadlampActorMsg (mailbox)
@@ -301,7 +321,7 @@ HeadlampActor
 └── send_to_brain()                       ← tell-back ZoneReady / ZoneSpontaneous
 ```
 
-### Assembly lifecycle flow
+#### Headlamp lifecycle flow
 
 ```mermaid
 ---
@@ -353,6 +373,33 @@ sequenceDiagram
     HL-->>Brain: ZoneReady( zone_id: Headlamp, state: Off )
   end
 ```
+
+### WiperActor
+
+Wiper is a fully actorified twinlet with **immediate transitions** and **no ACK protocol**.
+Rain ingress (`RainsStarted` / `RainsStopped`, projected from `VssSignal::RainDetected` on
+CAN) is routed to the wiper zone while the Brain is in `Idle` or `Driving`. A successful
+`Start` / `Stop` tell emits `StartWiping` / `StopWiping` outcomes that traverse the
+actuation path to `ActuationCommand::StartWiper` / `StopWiper` on CAN.
+
+```text
+WiperActorMsg (mailbox)
+└── Apply(WiperActorVocabulary)           ← Brain tell: one WiperMessage per turn
+
+WiperActor
+├── ctx: WiperContext                     ← domain state (Off / Ready / Running)
+├── on_receiving_message()                ← pure L1 handler; immediate ZoneReady reply
+└── tell-back ZoneReady                   ← no spontaneous events, no ACK timer
+```
+
+- **Three states only** — `Off`, `Ready`, `Running`; no `OnRequested`-style pending states.
+- **Tell-back timeout** still applies (Brain↔twinlet coordination). Exhaustion yields a
+  synthetic `LogWarning` outcome on the diagnostic stream (unlike headlamp, there is no
+  `ZoneSpontaneous` path).
+- **L6 path** — gateway wiper command publisher → `vcan0` → `wiper_actuator` binary
+  (fire-and-forget motor log; optional `WIPER_ACTUATOR_DROP_RESPONSE_PROB` to ignore CMDs).
+
+Full diagram: [`diagrams/wiper_assembly_state_transition.md`](diagrams/wiper_assembly_state_transition.md)
 
 ---
 
@@ -419,26 +466,50 @@ when no detector fires or `MAX_QUIESCENCE_HOPS` is reached.
 
 ## How to Run
 
-**Three processes** share Linux **SocketCAN** (`vcan0` by default):
+**Four processes** share Linux **SocketCAN** (`vcan0` by default). Start the actuators before
+or alongside the gateway so CMD frames have a listener on the bus.
 
 ```bash
-# Terminal 1 — CAN emulator (RPM + lux)
+# One-time setup (per boot)
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan 2>/dev/null || true
+sudo ip link set up vcan0
+
+# Terminal 1 — CAN emulator (RPM + ambient lux + rain sensor)
 cargo run -p emulator
 
-# Terminal 2 — Headlamp actuator (body ECU stand-in)
+# Terminal 2 — Headlamp actuator (CMD in → ACK/NACK out)
 cargo run -p front_headlamp_actuator
 
-# Terminal 3 — Gateway (Brain + HeadlampActor)
+# Terminal 3 — Wiper actuator (CMD in → motor log out; no ACK/NACK)
+cargo run -p wiper_actuator
+
+# Terminal 4 — Gateway (Brain + HeadlampActor + WiperActor)
 cargo run -p gateway
 
-# Optional: ledger-only output (no diagnostics)
+# Optional: coloured transition ledger only (no diagnostics)
 cargo run -p gateway -- --print-transitions-only
+```
+
+### Tunable probabilities (optional)
+
+| Variable                                     | Process                 | Effect                                                               |
+| -------------------------------------------- | ----------------------- | -------------------------------------------------------------------- |
+| `EMULATOR_TUNNEL_PROB`                       | emulator                | Per-tick probability of entering a low-lux tunnel (headlamp demo)    |
+| `EMULATOR_RAIN_PROB`                         | emulator                | Per-tick probability of rain starting when dry (`0.0` disables rain) |
+| `FRONT_HEADLAMP_ACTUATOR_DROP_RESPONSE_PROB` | front_headlamp_actuator | Probability of sending no ACK/NACK after a CMD                       |
+| `WIPER_ACTUATOR_DROP_RESPONSE_PROB`          | wiper_actuator          | Probability of ignoring a wiper CMD (no motor actuation)             |
+
+Example:
+
+```bash
+EMULATOR_RAIN_PROB=0.05 cargo run -p emulator
+WIPER_ACTUATOR_DROP_RESPONSE_PROB=0.3 cargo run -p wiper_actuator
 ```
 
 ### Prerequisites
 
-- Linux with `vcan0` set up:
-  `sudo modprobe vcan; sudo ip link add dev vcan0 type vcan; sudo ip link set up vcan0`
+- Linux with `vcan0` set up (see one-time setup above)
 - Rust toolchain (MSRV: latest stable)
 
 ---
@@ -450,7 +521,7 @@ crates/
 ├── common/                     # L0–L5 library pyramid
 │   └── src/
 │       ├── vehicle_physics/    # L0: constants, kinematics
-│       ├── vehicle_state/      # L1: assembly contexts (powertrain, health, visibility, headlamp)
+│       ├── vehicle_state/      # L1: assembly contexts (powertrain, health, visibility, headlamp, wiper)
 │       ├── fsm/                # L2: FsmState, FsmEvent, step(), transition_map
 │       │   ├── machineries.rs  #    State/event/action enums, AssemblyId, ALL_ASSEMBLIES
 │       │   ├── transition_map.rs  # transition() + output()
@@ -460,6 +531,7 @@ crates/
 │       ├── twin_runtime/       # L4: actors, turn_barrier, detectors
 │       │   ├── controller/     #    VirtualCarActor (Brain)
 │       │   ├── headlamp_actor.rs  # HeadlampActor twinlet
+│       │   ├── wiper_actor.rs     # WiperActor twinlet
 │       │   ├── turn_barrier.rs    # TurnBarrier, BarrierEntry, TellBackWait
 │       │   ├── zone_tell_back.rs  # TellBackWait, retry logic (legacy, migrating to turn_barrier)
 │       │   ├── zone_turn.rs       # zone_message_for_event routing
@@ -467,13 +539,15 @@ crates/
 │       │   └── detectors/      #    LightingUnsafe, etc.
 │       ├── facade.rs           # L5: public API surface
 │       └── lib.rs              # module declarations
-├── gateway/                    # L6: CAN I/O, Brain wiring
-├── emulator/                   # L6: RPM + lux publisher
-├── front_headlamp_actuator/    # L6: body ECU stand-in
-└── vehicle_device_bus/         # CAN protocol constants
+├── gateway/                    # L6: CAN I/O, Brain wiring, actuation publishers
+├── emulator/                   # L6: RPM + lux + rain publisher
+├── front_headlamp_actuator/    # L6: headlamp body ECU stand-in
+├── wiper_actuator/             # L6: wiper motor stand-in (fire-and-forget)
+└── vehicle_device_bus/         # L6: per-device CAN codecs (headlamp, wiper)
 diagrams/
 ├── fsm_state_transitions.md          # Brain FSM state diagram
-└── headlamp_assembly_state_transition.md  # Headlamp assembly lifecycle
+├── headlamp_assembly_state_transition.md  # Headlamp assembly lifecycle
+└── wiper_assembly_state_transition.md     # Wiper assembly lifecycle
 docs/
 ├── library-reorg.md            # Pyramid layering detail
 └── rpm-model-tutorial.md       # Emulator RPM model explanation
@@ -493,36 +567,53 @@ cargo test -p common -- test::zone_tell_back_contract
 cargo test -p common -- test::turn_barrier_contract
 cargo test -p common -- test::headlamp_ack_timer_contract
 cargo test -p common -- test::headlamp_lifecycle_contract
+cargo test -p common -- test::wiper_zone_contract
+cargo test -p common -- test::wiper_actuation_contract
+cargo test -p common -- test::wiper_signal_contract
+cargo test -p common -- test::wiper_startup_failure_contract
+
+# Wiper CAN codec (vehicle_device_bus)
+cargo test -p vehicle_device_bus --test wiper_can_codec
 ```
 
 ### Key contract tests
 
-| Suite | What it validates |
-|-------|-------------------|
-| `quiescence_actor_contract` | End-to-end Brain turns: ingress → tell → tell-back → commit → ledger |
-| `zone_tell_back_contract` | Per-assembly retry, exhaustion, synthetic reply, concurrent assembly timeouts |
-| `turn_barrier_contract` | ROB ordering: reverse-reply-order, backlog drainage, multi-barrier drain |
-| `headlamp_ack_timer_contract` | ACK deadline, spontaneous incomplete, DrivingDangerously transition |
-| `headlamp_lifecycle_contract` | `HeadlampContext::on_receiving_message` in isolation (no actor) |
-| `scenarios_smoke` | Full scenario: PowerOn → Idle → Driving → PowerOff |
+| Suite                            | What it validates                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `quiescence_actor_contract`      | End-to-end Brain turns: ingress → tell → tell-back → commit → ledger          |
+| `zone_tell_back_contract`        | Per-assembly retry, exhaustion, synthetic reply, concurrent assembly timeouts |
+| `turn_barrier_contract`          | ROB ordering: reverse-reply-order, backlog drainage, multi-barrier drain      |
+| `headlamp_ack_timer_contract`    | ACK deadline, spontaneous incomplete, DrivingDangerously transition           |
+| `headlamp_lifecycle_contract`    | `HeadlampContext::on_receiving_message` in isolation (no actor)               |
+| `wiper_zone_contract`            | Wiper routing, L1 transitions, startup barrier, ROB ordering with wiper       |
+| `wiper_actuation_contract`       | Domain actions, outcome_map, actuation channel, physical rain e2e             |
+| `wiper_signal_contract`          | `VssSignal::RainDetected` CAN encode/decode                                   |
+| `wiper_startup_failure_contract` | Silent wiper → tell-back exhaustion → diagnostic warning                      |
+| `scenarios_smoke`                | Full scenario: PowerOn → Idle → Driving → PowerOff                            |
 
 ---
+### Screenshot of running application
+
+![](./assets/conole-running-executables.jpg)
+
 
 ## Design Documents
 
-| Document | Content |
-|----------|---------|
-| [`DESIGN.md`](DESIGN.md) | Consolidated architecture reference (full Iteration 4 design) |
-| [`diagrams/fsm_state_transitions.md`](diagrams/fsm_state_transitions.md) | Brain FSM state transition diagram (Mermaid) |
-| [`diagrams/headlamp_assembly_state_transition.md`](diagrams/headlamp_assembly_state_transition.md) | Headlamp assembly lifecycle diagram (Mermaid) |
-| [`docs/library-reorg.md`](docs/library-reorg.md) | Library pyramid detail (L0–L6, TangleGuard) |
-| [`docs/rpm-model-tutorial.md`](docs/rpm-model-tutorial.md) | Emulator RPM model (intuition-first) |
+| Document                                                                                           | Content                                                       |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [`DESIGN.md`](DESIGN.md)                                                                           | Consolidated architecture reference (full Iteration 4 design) |
+| [`diagrams/fsm_state_transitions.md`](diagrams/fsm_state_transitions.md)                           | Brain FSM state transition diagram (Mermaid)                  |
+| [`diagrams/headlamp_assembly_state_transition.md`](diagrams/headlamp_assembly_state_transition.md) | Headlamp assembly lifecycle diagram (Mermaid)                 |
+| [`diagrams/wiper_assembly_state_transition.md`](diagrams/wiper_assembly_state_transition.md)       | Wiper assembly lifecycle diagram (Mermaid)                    |
+| [`docs/library-reorg.md`](docs/library-reorg.md)                                                   | Library pyramid detail (L0–L6, TangleGuard)                   |
+| [`docs/rpm-model-tutorial.md`](docs/rpm-model-tutorial.md)                                         | Emulator RPM model (intuition-first)                          |
 
 ---
 
 ## What Iteration 4 Is *Not* (Yet)
 
-- Not a full vehicle SDV stack — only `HeadlampActor` is a twinlet; Wiper is in-process.
+- Not a full vehicle SDV stack — two managed assemblies (`Headlamp`, `Wiper`) with L6 CAN
+  slices; many other vehicle domains are absent.
 - Not production safety certification — the correctness model is a teaching scaffold.
 - Not the offline ledger analyser — the gateway can emit a machine-oriented transition stream;
   the reader/report tool is designed but unbuilt.
