@@ -516,42 +516,7 @@ WIPER_ACTUATOR_DROP_RESPONSE_PROB=0.3 cargo run -p wiper_actuator
 
 ## Project Structure
 
-```text
-crates/
-├── common/                     # L0–L5 library pyramid
-│   └── src/
-│       ├── vehicle_physics/    # L0: constants, kinematics
-│       ├── vehicle_state/      # L1: assembly contexts (powertrain, health, visibility, headlamp, wiper)
-│       ├── fsm/                # L2: FsmState, FsmEvent, step(), transition_map
-│       │   ├── machineries.rs  #    State/event/action enums, AssemblyId, ALL_ASSEMBLIES
-│       │   ├── transition_map.rs  # transition() + output()
-│       │   └── step.rs         #    step() orchestrator
-│       ├── digital_twin/       # L3: DigitalTwinCar, mailbox vocabulary
-│       ├── published/          # L3': PublishedTransitionRecord
-│       ├── twin_runtime/       # L4: actors, turn_barrier, detectors
-│       │   ├── controller/     #    VirtualCarActor (Brain)
-│       │   ├── headlamp_actor.rs  # HeadlampActor twinlet
-│       │   ├── wiper_actor.rs     # WiperActor twinlet
-│       │   ├── turn_barrier.rs    # TurnBarrier, BarrierEntry, TellBackWait
-│       │   ├── zone_tell_back.rs  # TellBackWait, retry logic (legacy, migrating to turn_barrier)
-│       │   ├── zone_turn.rs       # zone_message_for_event routing
-│       │   ├── zone_replies.rs    # ZoneReplies helper
-│       │   └── detectors/      #    LightingUnsafe, etc.
-│       ├── facade.rs           # L5: public API surface
-│       └── lib.rs              # module declarations
-├── gateway/                    # L6: CAN I/O, Brain wiring, actuation publishers
-├── emulator/                   # L6: RPM + lux + rain publisher
-├── front_headlamp_actuator/    # L6: headlamp body ECU stand-in
-├── wiper_actuator/             # L6: wiper motor stand-in (fire-and-forget)
-└── vehicle_device_bus/         # L6: per-device CAN codecs (headlamp, wiper)
-diagrams/
-├── brain_transitions.md              # Brain FSM state diagram
-├── headlamp_assembly_state_transition.md  # Headlamp assembly lifecycle
-└── wiper_assembly_state_transition.md     # Wiper assembly lifecycle
-docs/
-├── library-reorg.md            # Pyramid layering detail
-└── rpm-model-tutorial.md       # Emulator RPM model explanation
-```
+Detail: [`docs/project-structure.md`](docs/project-structure.md)
 
 ---
 
@@ -576,20 +541,7 @@ cargo test -p common -- test::wiper_startup_failure_contract
 cargo test -p vehicle_device_bus --test wiper_can_codec
 ```
 
-### Key contract tests
-
-| Suite                            | What it validates                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------- |
-| `quiescence_actor_contract`      | End-to-end Brain turns: ingress → tell → tell-back → commit → ledger          |
-| `zone_tell_back_contract`        | Per-assembly retry, exhaustion, synthetic reply, concurrent assembly timeouts |
-| `turn_barrier_contract`          | ROB ordering: reverse-reply-order, backlog drainage, multi-barrier drain      |
-| `headlamp_ack_timer_contract`    | ACK deadline, spontaneous incomplete, DrivingDangerously transition           |
-| `headlamp_lifecycle_contract`    | `HeadlampContext::on_receiving_message` in isolation (no actor)               |
-| `wiper_zone_contract`            | Wiper routing, L1 transitions, startup barrier, ROB ordering with wiper       |
-| `wiper_actuation_contract`       | Domain actions, outcome_map, actuation channel, physical rain e2e             |
-| `wiper_signal_contract`          | `VssSignal::RainDetected` CAN encode/decode                                   |
-| `wiper_startup_failure_contract` | Silent wiper → tell-back exhaustion → diagnostic warning                      |
-| `scenarios_smoke`                | Full scenario: PowerOn → Idle → Driving → PowerOff                            |
+Contract test reference: [`docs/contract-tests.md`](docs/contract-tests.md)
 
 ---
 ### Screenshot of running application
@@ -599,14 +551,7 @@ cargo test -p vehicle_device_bus --test wiper_can_codec
 
 ## Design Documents
 
-| Document                                                                                           | Content                                                       |
-| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [`DESIGN.md`](DESIGN.md)                                                                           | Consolidated architecture reference (full Iteration 4 design) |
-| [`diagrams/brain_transitions.md`](diagrams/brain_transitions.md)                               | Brain FSM state transition diagram (Mermaid)                  |
-| [`diagrams/headlamp_assembly_state_transition.md`](diagrams/headlamp_assembly_state_transition.md) | Headlamp assembly lifecycle diagram (Mermaid)                 |
-| [`diagrams/wiper_assembly_state_transition.md`](diagrams/wiper_assembly_state_transition.md)       | Wiper assembly lifecycle diagram (Mermaid)                    |
-| [`docs/library-reorg.md`](docs/library-reorg.md)                                                   | Library pyramid detail (L0–L6, TangleGuard)                   |
-| [`docs/rpm-model-tutorial.md`](docs/rpm-model-tutorial.md)                                         | Emulator RPM model (intuition-first)                          |
+Detail: [`docs/design-documents.md`](docs/design-documents.md)
 
 ---
 
