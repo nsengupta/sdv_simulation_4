@@ -51,13 +51,13 @@ tell-back times out after the full retry budget, never by a normal operational t
 
 ```
 Brain                     WiperActor
-  │── BecomeOn tell ──────────►│
-  │                            │ Off → Ready (immediate)
-  │◄─── ZoneReady(Ready) ──────│
+  │── BecomeOn tell   ──────────►│
+  │                              │ Off → Ready (immediate)
+  │◄─── ZoneReady(Ready)   ──────│
   │
-  │── Start tell ──────────────►│
-  │                             │ Ready → Running (immediate)
-  │◄─── ZoneReady(Running) ─────│
+  │── Start tell  ──────────────►│
+  │                              │ Ready → Running (immediate)
+  │◄─── ZoneReady(Running)  ─────│
   │     outcomes: [StartWiping]
   │     → DomainAction::RequestWiperStart
   │     → ActuationCommand::StartWiper → CAN CMD

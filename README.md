@@ -126,7 +126,7 @@ Off ──PowerOn──► PreparingToStart({Headlamp, Wiper})
   Driving ──speed > 160 km/h──► ExtremeOperationWarning(now) ──TimerTick + cooldown──► Driving
 ```
 
-Full transition table: [`diagrams/fsm_state_transitions.md`](diagrams/fsm_state_transitions.md)
+Full transition table: [`diagrams/brain_transitions.md`](diagrams/brain_transitions.md)
 
 ### Key invariants
 
@@ -545,7 +545,7 @@ crates/
 ├── wiper_actuator/             # L6: wiper motor stand-in (fire-and-forget)
 └── vehicle_device_bus/         # L6: per-device CAN codecs (headlamp, wiper)
 diagrams/
-├── fsm_state_transitions.md          # Brain FSM state diagram
+├── brain_transitions.md              # Brain FSM state diagram
 ├── headlamp_assembly_state_transition.md  # Headlamp assembly lifecycle
 └── wiper_assembly_state_transition.md     # Wiper assembly lifecycle
 docs/
@@ -602,7 +602,7 @@ cargo test -p vehicle_device_bus --test wiper_can_codec
 | Document                                                                                           | Content                                                       |
 | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | [`DESIGN.md`](DESIGN.md)                                                                           | Consolidated architecture reference (full Iteration 4 design) |
-| [`diagrams/fsm_state_transitions.md`](diagrams/fsm_state_transitions.md)                           | Brain FSM state transition diagram (Mermaid)                  |
+| [`diagrams/brain_transitions.md`](diagrams/brain_transitions.md)                               | Brain FSM state transition diagram (Mermaid)                  |
 | [`diagrams/headlamp_assembly_state_transition.md`](diagrams/headlamp_assembly_state_transition.md) | Headlamp assembly lifecycle diagram (Mermaid)                 |
 | [`diagrams/wiper_assembly_state_transition.md`](diagrams/wiper_assembly_state_transition.md)       | Wiper assembly lifecycle diagram (Mermaid)                    |
 | [`docs/library-reorg.md`](docs/library-reorg.md)                                                   | Library pyramid detail (L0–L6, TangleGuard)                   |

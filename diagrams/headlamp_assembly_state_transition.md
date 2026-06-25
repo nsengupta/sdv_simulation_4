@@ -1,4 +1,8 @@
-# Headlamp Assembly — State Transition Diagram (Phase 2)
+# Headlamp Assembly — State Transition Diagram
+
+The headlamp zone uses five states with an actuation-ack protocol: ON and OFF
+commands pass through `OnRequested` / `OffRequested` while waiting for hardware
+`AckOn` / `AckOff`. Timeouts yield `ActuationIncomplete` outcomes and roll back.
 
 ## States
 
@@ -10,30 +14,52 @@
 | `On` | Physical lamp confirmed ON by hardware ACK. |
 | `OffRequested` | OFF actuation command sent to hardware; waiting for `AckOff`. |
 
-## Transitions
+## Transition Diagram
 
-```
-                  ┌──────────────────────────────────────────────────────┐
-                  │                  BecomeOff                           │
-                  ▼                                                      │
-┌─────┐  BecomeOn  ┌───────┐  AmbientLux≤threshold ┌─────────────┐       │
-│ Off │──────────►│ Ready  │──────────────────────►│ OnRequested │       │
-│     │            │       │◄──────────────────────│             │       │
-└─────┘            └───────┘  ActuationIncomplete  └─────────────┘       │
-   ▲                  ▲   ▲         (On) / Timeout            │          │
-   │                  │   │                                   │          │
-   │                  │   └──────────── AckOff ───────────────┼───┐      │
-   │                  │                                       │   │      │
-   │ BecomeOff        │ BecomeOff                          AckOn  │      │
-   │                  │                                       │   │      │
-   │              ┌───┴──────────┐                      ┌─────▼──────┐   │
-   │              │ OffRequested │◄─────────────────────│     On     │───┘
-   │              └──────────────┘  AmbientLux≥threshold└────────────┘
-   │                   │
-   │  BecomeOff        │ ActuationIncomplete(Off) / Timeout
-   │  (from any) ──────►  → On (lamp NOT off)
-   │
-   └─── ResetForIgnitionOff (from any state)
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    [*] --> Off
+
+    Off --> Ready           : BecomeOn\n(StartAssemblies)
+
+    Ready --> Off           : BecomeOff\n(StopAssemblies)
+    Ready --> OnRequested   : AmbientLux\n≤ threshold
+
+    OnRequested --> On      : AckOn
+    OnRequested --> Ready   : ActuationIncomplete\n/ Timeout
+
+    On --> OffRequested     : AmbientLux\n≥ threshold
+    On --> Off              : BecomeOff
+
+    OffRequested --> Ready  : AckOff
+    OffRequested --> On     : ActuationIncomplete\n/ Timeout
+
+    note right of Off
+        Assembly not started.
+        Ignores AmbientLux.
+        ResetForIgnitionOff → Off from any state.
+    end note
+
+    note right of Ready
+        Assembly active.
+        Physical lamp dark.
+    end note
+
+    note right of OnRequested
+        ON actuation sent.
+        Awaiting AckOn.
+    end note
+
+    note right of On
+        Lamp confirmed ON.
+    end note
+
+    note right of OffRequested
+        OFF actuation sent.
+        Awaiting AckOff.
+    end note
 ```
 
 ### Transition table (complete)
